@@ -589,6 +589,10 @@ function Stop-LauncherProcess {
 
     foreach ($proc in $matches) {
         try {
+            $liveProcess = Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue
+            if (-not $liveProcess) {
+                continue
+            }
             Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
         } catch {
             Write-Warn "Could not close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
@@ -645,6 +649,13 @@ function Start-AppIdTarget {
 
     $shellPath = 'shell:AppsFolder\' + $AppId
     $errors = New-Object System.Collections.Generic.List[string]
+
+    if (Test-IsElevated) {
+        Write-ErrorLine '当前是管理员窗口，无法可靠通过 Windows AppId 启动 Codex。'
+        Write-Next '请关闭这个窗口，直接双击桌面的 Codex Windows Launcher，或打开普通 PowerShell 再运行。'
+        Write-Next '如果普通窗口仍失败，请运行 doctor；启动目标若仍是 AppId，需要在 launcher-config.json 设置真实 Codex Desktop 的 codexPath。'
+        return
+    }
 
     try {
         Start-Process -FilePath 'explorer.exe' -ArgumentList $shellPath -ErrorAction Stop | Out-Null
