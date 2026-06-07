@@ -106,22 +106,39 @@ function Load-LauncherConfig {
 }
 
 function Write-LauncherConfigIfMissing {
-    param([switch]$NoWrite)
+    param(
+        $Config,
+        [switch]$NoWrite
+    )
 
     if (Test-Path -LiteralPath $Script:ConfigPath -PathType Leaf) {
         Write-Ok "配置文件已存在：$Script:ConfigPath"
         return
     }
 
+    $codexPath = ''
+    $ccswitchPath = ''
+    $foundCodexExe = Find-CodexExecutable -Config $Config
+    if ($foundCodexExe) {
+        $codexPath = $foundCodexExe
+    }
+    $foundCCSwitch = Resolve-CCSwitchPath -Config $Config
+    if ($foundCCSwitch) {
+        $ccswitchPath = $foundCCSwitch
+    }
+
     if ($NoWrite) {
         Write-Info "NoLaunch: 将会创建非敏感配置文件：$Script:ConfigPath"
+        if ($codexPath) {
+            Write-Info "NoLaunch: 将会写入 codexPath=$codexPath"
+        }
         return
     }
 
     Ensure-Directory -Path $Script:LauncherHome
     $json = @{
-        codexPath = ''
-        ccswitchPath = ''
+        codexPath = $codexPath
+        ccswitchPath = $ccswitchPath
         notes = @(
             'This file is machine-local and must not contain secrets.',
             'Set codexPath or ccswitchPath only when auto-discovery fails.',
@@ -421,36 +438,60 @@ function Test-CodexExecutableCandidate {
     return $true
 }
 
-function Resolve-CodexLaunchTarget {
+function Find-CodexExecutable {
     param($Config)
 
     if (Test-CodexExecutableCandidate -Path $Config.codexPath) {
-        return New-Object PSObject -Property @{
-            Kind = 'Exe'
-            Value = [Environment]::ExpandEnvironmentVariables($Config.codexPath)
+        return [Environment]::ExpandEnvironmentVariables($Config.codexPath)
+    }
+
+    $commonPaths = @(
+        (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\Codex.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Codex\Codex.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex\Codex.exe'),
+        (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin\codex.exe')
+    )
+
+    foreach ($path in $commonPaths) {
+        if (Test-CodexExecutableCandidate -Path $path) {
+            return [Environment]::ExpandEnvironmentVariables($path)
         }
     }
 
-    $appId = Find-CodexStartAppId
-    if ($appId) {
-        return New-Object PSObject -Property @{ Kind = 'AppId'; Value = $appId }
+    $shortcutTarget = Find-ShortcutTarget -NamePatterns @('Codex', 'OpenAI Codex')
+    if (Test-CodexExecutableCandidate -Path $shortcutTarget) {
+        return $shortcutTarget
     }
 
     $roots = @(
-        'C:\Program Files\WindowsApps',
         (Join-Path $env:LOCALAPPDATA 'Programs'),
+        (Join-Path $env:LOCALAPPDATA 'OpenAI'),
         $env:LOCALAPPDATA,
         $env:ProgramFiles,
         ${env:ProgramFiles(x86)}
     )
     $exe = Find-ExecutableByName -Names @('Codex.exe', 'OpenAI Codex.exe') -Roots $roots
     if (Test-CodexExecutableCandidate -Path $exe) {
-        return New-Object PSObject -Property @{ Kind = 'Exe'; Value = $exe }
+        return $exe
     }
 
-    $shortcutTarget = Find-ShortcutTarget -NamePatterns @('Codex', 'OpenAI Codex')
-    if (Test-CodexExecutableCandidate -Path $shortcutTarget) {
-        return New-Object PSObject -Property @{ Kind = 'Exe'; Value = $shortcutTarget }
+    return $null
+}
+
+function Resolve-CodexLaunchTarget {
+    param($Config)
+
+    $exe = Find-CodexExecutable -Config $Config
+    if ($exe) {
+        return New-Object PSObject -Property @{
+            Kind = 'Exe'
+            Value = $exe
+        }
+    }
+
+    $appId = Find-CodexStartAppId
+    if ($appId) {
+        return New-Object PSObject -Property @{ Kind = 'AppId'; Value = $appId }
     }
 
     return $null
@@ -637,6 +678,7 @@ function Start-AppIdTarget {
     } else {
         Write-Next "请尝试从开始菜单直接启动 Codex，或在 $Script:ConfigPath 里设置 codexPath。"
     }
+    Write-Next '也可以运行 doctor 查看当前是 Exe 还是 AppId 启动目标。v0.3 会优先使用真实 Codex.exe。'
 }
 
 function Start-LaunchTarget {
@@ -1109,7 +1151,12 @@ function Invoke-Doctor {
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if ($codexTarget) {
-        Write-Ok "Codex 启动目标：$($codexTarget.Kind) $($codexTarget.Value)"
+        if ($codexTarget.Kind -eq 'Exe') {
+            Write-Ok "Codex 启动目标：Exe $($codexTarget.Value)"
+        } else {
+            Write-Warn "Codex 启动目标：AppId $($codexTarget.Value)"
+            Write-Next 'AppId 在公司电脑或管理员窗口可能被拦。若启动失败，请在 launcher-config.json 设置 codexPath。'
+        }
     } else {
         Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，再运行 bootstrap。'
     }
@@ -1187,7 +1234,7 @@ function Invoke-Bootstrap {
         Backup-ShortcutMetadata -ShortcutPaths $state.LegacyShortcuts -Reason 'legacy-shortcuts-detected' -NoWrite:$NoLaunch
     }
 
-    Write-LauncherConfigIfMissing -NoWrite:$NoLaunch
+    Write-LauncherConfigIfMissing -Config $Config -NoWrite:$NoLaunch
     New-LauncherShortcut -NoWrite:$NoLaunch
 
     Invoke-Doctor -Config (Read-LauncherConfig)
