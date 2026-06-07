@@ -17,6 +17,15 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 
 启动器只在本机复制、恢复、备份这些 profile 文件，不打印、不上传、不转换 `auth.json` 或 token 内容。
 
+启动 Codex Desktop 时，启动器会优先寻找真实桌面程序，而不是直接依赖 Windows AppId：
+
+1. 先使用本机 `launcher-config.json` 中显式设置的 `codexPath`。
+2. 再通过 `Get-AppxPackage` 自动查找 MSIX/AppX 安装包中的 `app\Codex.exe`。
+3. 再检查常见安装目录和开始菜单快捷方式。
+4. 最后才 fallback 到 Windows AppId。
+
+`%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe` 是 Codex CLI，不是 Codex Desktop，启动器会明确排除它。
+
 ## 文件
 
 - `codex-launcher.ps1`：启动器入口。
