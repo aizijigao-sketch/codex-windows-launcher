@@ -171,6 +171,10 @@ Describe 'codex-launcher.ps1 static safety checks' {
         }
 
         Assert-ContainsText $script:Launcher 'Find-CodexExecutable'
+        Assert-ContainsText $script:Launcher 'Find-CodexAppxExecutable'
+        Assert-ContainsText $script:Launcher 'Get-AppxPackage'
+        Assert-ContainsText $script:Launcher 'AppxManifest\.xml'
+        Assert-ContainsText $script:Launcher 'app\\Codex\.exe'
         Assert-ContainsText $script:Launcher 'Codex.exe'
         Assert-ContainsText $script:Launcher 'OpenAI Codex.exe'
         Assert-ContainsText $script:Launcher 'bin\\\\codex'
@@ -180,6 +184,11 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $appIdIndex = $script:Launcher.IndexOf('$appId = Find-CodexStartAppId')
         if ($exeIndex -lt 0 -or $appIdIndex -lt 0 -or $exeIndex -gt $appIdIndex) {
             throw 'Resolve-CodexLaunchTarget must prefer a real Codex executable before AppId fallback.'
+        }
+        $appxIndex = $script:Launcher.IndexOf('$appxExe = Find-CodexAppxExecutable')
+        $commonPathIndex = $script:Launcher.IndexOf('$commonPaths = @(')
+        if ($appxIndex -lt 0 -or $commonPathIndex -lt 0 -or $appxIndex -gt $commonPathIndex) {
+            throw 'Find-CodexExecutable must try the AppX Desktop executable before broad path scanning.'
         }
     }
 
