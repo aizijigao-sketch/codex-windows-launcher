@@ -173,6 +173,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Find-CodexExecutable'
         Assert-ContainsText $script:Launcher 'Codex.exe'
         Assert-ContainsText $script:Launcher 'OpenAI Codex.exe'
+        Assert-ContainsText $script:Launcher 'bin\\\\codex'
+        Assert-DoesNotContainText $script:Launcher 'OpenAI\\\\Codex\\\\bin\\\\codex\.exe'
         Assert-ContainsText $script:Launcher 'Find-CodexStartAppId'
         $exeIndex = $script:Launcher.IndexOf('$exe = Find-CodexExecutable -Config $Config')
         $appIdIndex = $script:Launcher.IndexOf('$appId = Find-CodexStartAppId')
