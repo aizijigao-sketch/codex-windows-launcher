@@ -438,11 +438,62 @@ function Test-CodexExecutableCandidate {
     return $true
 }
 
+function Find-CodexAppxExecutable {
+    try {
+        $packages = @(Get-AppxPackage | Where-Object {
+            $_.Name -like '*Codex*' -or
+            $_.PackageFullName -like '*Codex*' -or
+            $_.PackageFamilyName -like 'OpenAI.Codex*'
+        })
+
+        foreach ($pkg in $packages) {
+            if ([string]::IsNullOrWhiteSpace($pkg.InstallLocation) -or -not (Test-Path -LiteralPath $pkg.InstallLocation -PathType Container)) {
+                continue
+            }
+
+            $directCandidates = @(
+                (Join-Path $pkg.InstallLocation 'app\Codex.exe'),
+                (Join-Path $pkg.InstallLocation 'Codex.exe'),
+                (Join-Path $pkg.InstallLocation 'app\OpenAI Codex.exe')
+            )
+            foreach ($candidate in $directCandidates) {
+                if (Test-CodexExecutableCandidate -Path $candidate) {
+                    return $candidate
+                }
+            }
+
+            $manifestPath = Join-Path $pkg.InstallLocation 'AppxManifest.xml'
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+                continue
+            }
+
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
+            $matches = [regex]::Matches($manifest, 'Executable="([^"]+)"')
+            foreach ($match in $matches) {
+                $relative = $match.Groups[1].Value -replace '/', '\'
+                $candidate = Join-Path $pkg.InstallLocation $relative
+                if (Test-CodexExecutableCandidate -Path $candidate) {
+                    return $candidate
+                }
+            }
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
+}
+
 function Find-CodexExecutable {
     param($Config)
 
     if (Test-CodexExecutableCandidate -Path $Config.codexPath) {
         return [Environment]::ExpandEnvironmentVariables($Config.codexPath)
+    }
+
+    $appxExe = Find-CodexAppxExecutable
+    if (Test-CodexExecutableCandidate -Path $appxExe) {
+        return $appxExe
     }
 
     $commonPaths = @(
