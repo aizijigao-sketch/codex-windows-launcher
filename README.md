@@ -30,13 +30,14 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 在 PowerShell 中进入项目目录：
 
 ```powershell
-.\codex-launcher.ps1
+.\codex-launcher.ps1 -Mode bootstrap
+.\codex-launcher.ps1 -Mode doctor
 ```
 
-可选：创建桌面快捷方式。
+也可以直接运行启动器。首次使用、缺配置、快捷方式指向旧路径或检测到旧快捷方式时，会自动进入 `bootstrap`：
 
 ```powershell
-.\scripts\create-desktop-shortcut.ps1 -Force
+.\codex-launcher.ps1
 ```
 
 如果你有自己的本地图标，可以这样指定；图标文件不建议提交到公有仓库：
@@ -85,21 +86,57 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 
 ### 4. 检查当前状态
 
-显示当前默认 `.codex`、已保存 profile、Codex 启动目标和 CCSwitch 状态。
+菜单 `4` 会运行 `doctor`。这是只读诊断，不创建目录、不改配置、不启动或关闭程序。
 
-## 首次使用流程
+它会检查：
 
-建立官方状态：
+- Codex Desktop 是否安装。
+- CCSwitch 是否安装和运行。
+- `127.0.0.1:15721` 是否监听。
+- 当前 `.codex` 是官方态、API-key 态、未知态还是不存在。
+- official / thirdparty profile 是否完整。
+- 桌面快捷方式是否指向当前启动器脚本。
+- 旧 `Start Codex With CC Switch` 快捷方式是否仍存在。
+
+### 5. 初始化/升级本机启动器
+
+菜单 `5` 会运行 `bootstrap`。它用于新电脑、升级、重新生成快捷方式或修复旧路径。
+
+`bootstrap` 允许做：
+
+1. 创建非敏感 `launcher-config.json`。
+2. 创建或更新桌面快捷方式。
+3. 备份旧快捷方式元数据。
+4. 输出下一步建议。
+
+`bootstrap` 不会删除旧快捷方式，不会删除 `.codex`、`.cc-switch` 或 CCSwitch 数据库，不会复制或迁移任何登录态。
+
+## 新电脑首次使用流程
+
+每台电脑都要在本机初始化、本机登录、本机保存 profile。不要从其他电脑复制 `auth.json`、`.codex`、`.cc-switch`、token、API key 或 refresh token。
+
+第一步：初始化和诊断。
 
 ```powershell
-.\codex-launcher.ps1
+.\codex-launcher.ps1 -Mode bootstrap
+.\codex-launcher.ps1 -Mode doctor
 ```
 
-1. 选择 `4` 检查当前状态。
-2. 选择 `1` 启动官方模式。
-3. 如果 Codex 要求网页登录，用官方 ChatGPT / OpenAI 账号登录。
-4. 登录完成并确认能进入官方状态后，关闭 Codex。
-5. 再打开启动器，选择 `3` 保存当前为官方状态。
+第二步：建立官方状态。
+
+```powershell
+.\codex-launcher.ps1 -Mode official
+```
+
+如果 Codex 要求网页登录，用这台电脑上的浏览器完成官方 ChatGPT / OpenAI 登录。登录完成并确认能进入官方状态后，关闭 Codex。
+
+第三步：保存这台电脑自己的官方状态。
+
+```powershell
+.\codex-launcher.ps1 -Mode saveofficial
+```
+
+保存过官方状态后，再运行官方模式应复用本机官方 profile，不应每次都跳网页登录。
 
 建立第三方状态：
 
@@ -126,6 +163,8 @@ notepad "$env:USERPROFILE\.codex-launcher\launcher-config.json"
 .\codex-launcher.ps1 -Mode official
 .\codex-launcher.ps1 -Mode thirdparty
 .\codex-launcher.ps1 -Mode saveofficial
+.\codex-launcher.ps1 -Mode bootstrap
+.\codex-launcher.ps1 -Mode doctor
 .\codex-launcher.ps1 -Mode check
 ```
 
@@ -145,11 +184,15 @@ notepad "$env:USERPROFILE\.codex-launcher\launcher-config.json"
 - 启动或关闭本机 Codex 与 CCSwitch 进程。
 - 备份并修复默认 `%USERPROFILE%\.codex\config.toml` 中明确的 custom provider 配置。
 - 备份并暂时移走 API-key 风格的 `%USERPROFILE%\.codex\auth.json`，以便官方网页登录。
+- 在 `bootstrap` 中创建本机配置和桌面快捷方式。
+- 在 `doctor` 中进行只读诊断。
 
 启动器不允许做：
 
 - 打印、导出、上传、哈希或转换 `auth.json` token 内容。
 - 把 OAuth token 转换成 API key。
+- 把无法识别的 `auth.json` 当作 API-key 登录态自动移走。
+- 覆盖已有 official profile 而不先备份。
 - 管理第三方 key。
 - 修改 CCSwitch provider、Base URL、模型映射或本地路由配置。
 - 修改 Windows 全局用户或机器环境变量。
