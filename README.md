@@ -107,7 +107,8 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 1. 创建非敏感 `launcher-config.json`。
 2. 创建或更新桌面快捷方式。
 3. 备份旧快捷方式元数据。
-4. 输出下一步建议。
+4. 优先发现真实 `Codex.exe` 并写入本机配置，减少公司电脑 AppId 启动被拦的概率。
+5. 输出下一步建议。
 
 `bootstrap` 不会删除旧快捷方式，不会删除 `.codex`、`.cc-switch` 或 CCSwitch 数据库，不会复制或迁移任何登录态。
 
@@ -121,6 +122,8 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 .\codex-launcher.ps1 -Mode bootstrap
 .\codex-launcher.ps1 -Mode doctor
 ```
+
+如果 `doctor` 显示 `Codex 启动目标：Exe ...`，这是推荐状态。若只显示 `AppId ...`，普通个人电脑通常仍可用；公司电脑或管理员窗口可能拦截 AppId 启动，此时优先在 `%USERPROFILE%\.codex-launcher\launcher-config.json` 中设置真实 `codexPath`。
 
 第二步：建立官方状态。
 
