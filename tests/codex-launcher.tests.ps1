@@ -164,6 +164,23 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'New-LauncherShortcut'
     }
 
+    It 'prefers a real Codex executable before AppId fallback' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping Codex launch target preference check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'Find-CodexExecutable'
+        Assert-ContainsText $script:Launcher 'Codex.exe'
+        Assert-ContainsText $script:Launcher 'OpenAI Codex.exe'
+        Assert-ContainsText $script:Launcher 'Find-CodexStartAppId'
+        $exeIndex = $script:Launcher.IndexOf('$exe = Find-CodexExecutable -Config $Config')
+        $appIdIndex = $script:Launcher.IndexOf('$appId = Find-CodexStartAppId')
+        if ($exeIndex -lt 0 -or $appIdIndex -lt 0 -or $exeIndex -gt $appIdIndex) {
+            throw 'Resolve-CodexLaunchTarget must prefer a real Codex executable before AppId fallback.'
+        }
+    }
+
     It 'treats unknown auth state conservatively' {
         if (-not (Test-Path -LiteralPath $LauncherPath)) {
             Write-Host 'Skipping auth state check because codex-launcher.ps1 is not present.'
