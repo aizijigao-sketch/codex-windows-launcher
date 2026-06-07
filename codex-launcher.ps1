@@ -590,6 +590,55 @@ function Restore-ProcessEnv {
     }
 }
 
+function Test-IsElevated {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Start-AppIdTarget {
+    param([string]$AppId)
+
+    $shellPath = 'shell:AppsFolder\' + $AppId
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    try {
+        Start-Process -FilePath 'explorer.exe' -ArgumentList $shellPath -ErrorAction Stop | Out-Null
+        return
+    } catch {
+        $errors.Add("Start-Process explorer.exe: $($_.Exception.Message)")
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $shell.ShellExecute('explorer.exe', $shellPath, '', 'open', 1)
+        return
+    } catch {
+        $errors.Add("Shell.Application: $($_.Exception.Message)")
+    }
+
+    try {
+        Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'start', '""', $shellPath) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        return
+    } catch {
+        $errors.Add("cmd start: $($_.Exception.Message)")
+    }
+
+    Write-ErrorLine '无法通过 Windows AppId 启动 Codex。'
+    foreach ($message in $errors) {
+        Write-Warn $message
+    }
+    if (Test-IsElevated) {
+        Write-Next '当前窗口是管理员模式。请关闭它，直接双击桌面的 Codex Windows Launcher，或用普通 PowerShell 运行。'
+    } else {
+        Write-Next "请尝试从开始菜单直接启动 Codex，或在 $Script:ConfigPath 里设置 codexPath。"
+    }
+}
+
 function Start-LaunchTarget {
     param(
         $Target,
@@ -616,7 +665,7 @@ function Start-LaunchTarget {
     $snapshot = Set-EnvForChildLaunch -SetValues $SetEnv -RemoveNames $RemoveEnv
     try {
         if ($Target.Kind -eq 'AppId') {
-            Start-Process -FilePath 'explorer.exe' -ArgumentList ('shell:AppsFolder\' + $Target.Value) | Out-Null
+            Start-AppIdTarget -AppId $Target.Value
         } else {
             Start-Process -FilePath $Target.Value | Out-Null
         }
