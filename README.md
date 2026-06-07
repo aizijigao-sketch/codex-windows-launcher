@@ -251,3 +251,4 @@ if ($errors) { $errors | Format-List } else { 'PARSE_OK' }
 - 如果官方模式每次都要求网页登录，先确认网页登录成功后是否执行过菜单 `3`。
 - 如果第三方模式不是预期 provider，先在 CCSwitch 里切好 provider，再运行菜单 `2`。
 - 如果找不到 Codex 或 CCSwitch，把可执行文件路径写进 `%USERPROFILE%\.codex-launcher\launcher-config.json`。
+- 如果窗口标题显示“管理员”，且 `doctor` 只检测到 `AppId`，公司电脑可能会拦截 `explorer.exe shell:AppsFolder\...`。请关闭管理员窗口，改用桌面快捷方式或普通 PowerShell；若仍失败，需要在配置中写入真实 Codex Desktop 的 `codexPath`。
