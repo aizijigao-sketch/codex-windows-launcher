@@ -48,6 +48,8 @@ Describe 'Codex Windows launcher documentation and configuration' {
     It 'documents official and third-party modes' {
         Assert-ContainsText $script:Readme '官方模式'
         Assert-ContainsText $script:Readme '第三方模式'
+        Assert-ContainsText $script:Readme 'bootstrap'
+        Assert-ContainsText $script:Readme 'doctor'
         Assert-ContainsText $script:Readme '\.codex'
         Assert-ContainsText $script:Readme 'CCSwitch'
         Assert-ContainsText $script:Readme 'profiles'
@@ -144,6 +146,36 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Restore-OfficialProfile'
         Assert-ContainsText $script:Launcher 'Save-OfficialProfileIfCurrentLooksOfficial'
         Assert-ContainsText $script:Launcher 'Test-CurrentLooksOfficialProfile'
+        Assert-ContainsText $script:Launcher 'before-\$ProfileName-save'
+    }
+
+    It 'supports bootstrap and read-only doctor modes' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping bootstrap/doctor check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher "ValidateSet\('official', 'thirdparty', 'saveofficial', 'check', 'doctor', 'bootstrap', 'menu'\)"
+        Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
+        Assert-ContainsText $script:Launcher 'Invoke-Doctor'
+        Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
+        Assert-ContainsText $script:Launcher 'Read-LauncherConfig'
+        Assert-ContainsText $script:Launcher 'Write-LauncherConfigIfMissing'
+        Assert-ContainsText $script:Launcher 'New-LauncherShortcut'
+    }
+
+    It 'treats unknown auth state conservatively' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping auth state check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'Get-AuthState'
+        Assert-ContainsText $script:Launcher "'api-key-like'"
+        Assert-ContainsText $script:Launcher "'official-like'"
+        Assert-ContainsText $script:Launcher "'unknown'"
+        Assert-ContainsText $script:Launcher "authState -eq 'unknown'"
+        Assert-ContainsText $script:Launcher '不会自动移走'
     }
 
     It 'backs up official config before repair writes' {
