@@ -183,6 +183,17 @@ Describe 'codex-launcher.ps1 static safety checks' {
         }
     }
 
+    It 'avoids AppId launch attempts from an elevated window' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping elevated AppId check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'Test-IsElevated'
+        Assert-ContainsText $script:Launcher '当前是管理员窗口，无法可靠通过 Windows AppId 启动 Codex'
+        Assert-ContainsText $script:Launcher '真实 Codex Desktop 的 codexPath'
+    }
+
     It 'treats unknown auth state conservatively' {
         if (-not (Test-Path -LiteralPath $LauncherPath)) {
             Write-Host 'Skipping auth state check because codex-launcher.ps1 is not present.'
