@@ -426,7 +426,7 @@ function Test-CodexExecutableCandidate {
     }
 
     $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-    if ($expanded -match '(?i)History\s*Sync|CodexHistorySync|codex-windows-launcher|start-codex-with-ccswitch') {
+    if ($expanded -match '(?i)History\s*Sync|CodexHistorySync|codex-windows-launcher|start-codex-with-ccswitch|\\bin\\codex\.exe$') {
         return $false
     }
 
@@ -448,8 +448,7 @@ function Find-CodexExecutable {
     $commonPaths = @(
         (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\Codex.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Codex\Codex.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex\Codex.exe'),
-        (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin\codex.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex\Codex.exe')
     )
 
     foreach ($path in $commonPaths) {
