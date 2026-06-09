@@ -220,6 +220,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Stop-ProcessesBeforeThirdPartySwitch'
         Assert-ContainsText $script:Launcher 'Confirm-ThirdPartyRouteConfigReady'
         Assert-ContainsText $script:Launcher 'Test-ActiveConfigLooksThirdPartyRoute'
+        Assert-ContainsText $script:Launcher 'Get-RunningExecutablePathByNames'
         Assert-ContainsText $script:Launcher '确保新配置会被重新读取'
         Assert-ContainsText $script:Launcher '已停止本次切换，避免继续使用旧路由/旧登录状态'
         Assert-ContainsText $script:Launcher '本次不会启动 Codex'
@@ -242,8 +243,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $restoreIndex = $preserveBody.IndexOf('Restore-ThirdPartyConfig')
         $confirmIndex = $preserveBody.IndexOf('Confirm-ThirdPartyRouteConfigReady')
         $restartIndex = $preserveBody.IndexOf('Restart-CCSwitchForThirdParty')
-        if ($prepIndex -lt 0 -or $restoreIndex -lt 0 -or $confirmIndex -lt 0 -or $restartIndex -lt 0 -or $prepIndex -gt $restoreIndex -or $restoreIndex -gt $confirmIndex -or $confirmIndex -gt $restartIndex) {
-            throw 'Preserve-auth mode must close Codex/CCSwitch, restore config, confirm route config, then restart CCSwitch.'
+        if ($prepIndex -lt 0 -or $restoreIndex -lt 0 -or $restartIndex -lt 0 -or $confirmIndex -lt 0 -or $prepIndex -gt $restoreIndex -or $restoreIndex -gt $restartIndex -or $restartIndex -gt $confirmIndex) {
+            throw 'Preserve-auth mode must close Codex/CCSwitch, restore config, restart CCSwitch, then confirm route config.'
         }
 
         $pureEnd = $script:Launcher.IndexOf('function Start-ThirdPartyMode')
@@ -255,8 +256,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $pureRestoreIndex = $pureBody.IndexOf('Restore-ThirdPartyPureProfile')
         $pureConfirmIndex = $pureBody.IndexOf('Confirm-ThirdPartyRouteConfigReady')
         $pureRestartIndex = $pureBody.IndexOf('Restart-CCSwitchForThirdParty')
-        if ($purePrepIndex -lt 0 -or $pureRestoreIndex -lt 0 -or $pureConfirmIndex -lt 0 -or $pureRestartIndex -lt 0 -or $purePrepIndex -gt $pureRestoreIndex -or $pureRestoreIndex -gt $pureConfirmIndex -or $pureConfirmIndex -gt $pureRestartIndex) {
-            throw 'Pure third-party mode must close Codex/CCSwitch, restore config/auth, confirm route config, then restart CCSwitch.'
+        if ($purePrepIndex -lt 0 -or $pureRestoreIndex -lt 0 -or $pureRestartIndex -lt 0 -or $pureConfirmIndex -lt 0 -or $purePrepIndex -gt $pureRestoreIndex -or $pureRestoreIndex -gt $pureRestartIndex -or $pureRestartIndex -gt $pureConfirmIndex) {
+            throw 'Pure third-party mode must close Codex/CCSwitch, restore config/auth, restart CCSwitch, then confirm route config.'
         }
     }
 
@@ -274,6 +275,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'CCSwitch 本地路由已就绪'
         Assert-ContainsText $script:Launcher '未检测到本地路由监听：127\.0\.0\.1:15721，本次不会启动 Codex'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 500'
+        Assert-ContainsText $script:Launcher '\$runningPath = Get-RunningExecutablePathByNames -Names \$Script:CCSwitchProcessNames'
     }
 
     It 'treats unknown auth state conservatively' {
