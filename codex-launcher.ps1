@@ -554,6 +554,11 @@ function Resolve-CCSwitchPath {
         return [Environment]::ExpandEnvironmentVariables($Config.ccswitchPath)
     }
 
+    $runningPath = Get-RunningExecutablePathByNames -Names $Script:CCSwitchProcessNames
+    if (Test-ExecutablePath -Path $runningPath) {
+        return $runningPath
+    }
+
     $shortcutTarget = Find-ShortcutTarget -NamePatterns @('*CCSwitch*', '*CC Switch*', '*ccswitch*', '*cc-switch*')
     if (Test-ExecutablePath -Path $shortcutTarget) {
         return $shortcutTarget
@@ -580,6 +585,20 @@ function Get-ProcessesByNames {
             $baseName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
             $_.Name -and ($nameSet.ContainsKey($_.Name.ToLowerInvariant()) -or $nameSet.ContainsKey($baseName.ToLowerInvariant()))
         }
+}
+
+function Get-RunningExecutablePathByNames {
+    param([string[]]$Names)
+
+    $proc = Get-ProcessesByNames -Names $Names |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) } |
+        Select-Object -First 1
+
+    if ($proc) {
+        return $proc.ExecutablePath
+    }
+
+    return $null
 }
 
 function Get-ProcessesByPath {
@@ -1621,11 +1640,11 @@ function Start-ThirdPartyPreserveAuthMode {
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
     Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch | Out-Null
 
-    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
+    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
         return
     }
 
-    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
         return
     }
 
@@ -1660,11 +1679,11 @@ function Start-ThirdPartyPureMode {
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyPureProfile -NoWrite:$NoLaunch | Out-Null
 
-    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
+    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
         return
     }
 
-    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
         return
     }
 
