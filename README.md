@@ -1,9 +1,10 @@
 ﻿# Codex Windows 启动器
 
-一个 Windows PowerShell 启动器，用来在 Codex Desktop 的两个本地状态之间切换：
+一个 Windows PowerShell 启动器，用来在 Codex Desktop 的官方登录态和第三方路由状态之间切换：
 
 - 官方模式：恢复已保存的 ChatGPT / OpenAI 官方登录态并启动 Codex。
-- 第三方模式：恢复已保存的 CCSwitch / custom 路由状态并重载 Codex。
+- 第三方模式，保留官方登录：使用 CCSwitch / custom 路由，但不恢复第三方 `auth.json`。
+- 第三方模式，纯第三方/API-key：恢复第三方配置和第三方 `auth.json`。
 
 这个项目只负责启动和切换 Codex Desktop。历史同步、项目列表修复、知识库同步等工具应单独使用，不属于本启动器职责。
 
@@ -12,7 +13,7 @@
 Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认 `%USERPROFILE%\.codex`。给桌面版单独设置 `CODEX_HOME` 并不稳定，所以本启动器采用本地 profile 文件切换：
 
 - `%USERPROFILE%\.codex-launcher\profiles\official`：官方登录态和非 custom 配置。
-- `%USERPROFILE%\.codex-launcher\profiles\thirdparty`：CCSwitch/custom 配置和第三方 API-key 风格登录态。
+- `%USERPROFILE%\.codex-launcher\profiles\thirdparty`：CCSwitch/custom 配置；纯第三方模式也可使用其中的 API-key 风格登录态。
 - `%USERPROFILE%\.codex-launcher\backup`：切换前的本地备份。
 
 启动器只在本机复制、恢复、备份这些 profile 文件，不打印、不上传、不转换 `auth.json` 或 token 内容。
@@ -68,30 +69,40 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 3. 如果已经保存过官方 profile，恢复它并启动 Codex。
 4. 如果没有官方 profile，清理默认 `.codex` 中的 custom provider 配置，并暂时移走 API-key 风格的 `auth.json`。
 5. 启动 Codex Desktop，让用户正常网页登录。
-6. 第一次官方登录成功后，建议选择菜单 `3` 保存当前官方状态。
+6. 官方登录态会在后续安全切换时自动保存；不会把第三方/API-key 状态误保存为官方状态。
 
 保存过官方状态后，再选菜单 `1` 应该复用本地官方登录态，不应每次都跳网页登录。
 
-### 2. 第三方模式：恢复 CCSwitch/custom 状态并重载 Codex
+### 2. 第三方模式：保留官方登录信息并使用第三方路由
 
-适合回到 CCSwitch 管理的第三方路由。
+这是推荐的日常第三方模式。它切换到 CCSwitch/custom 路由，但尽量保留官方 ChatGPT / OpenAI 登录态。
 
 行为：
 
-1. 确认 CCSwitch 正在运行；没有运行则启动它。
-2. 关闭旧的 Codex Desktop。
-3. 如果当前默认 `.codex` 看起来是官方态，先自动保存为官方 profile。
-4. 恢复已保存的第三方 profile。
-5. 启动 Codex Desktop。
+1. 关闭旧的 Codex Desktop。
+2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方登录文件。
+3. 只恢复已保存的第三方 `config.toml`。
+4. 保留当前官方 `auth.json`；如果当前不是官方登录态，则尝试从 official profile 只恢复 `auth.json`。
+5. 重启或启动 CCSwitch，并检查 `127.0.0.1:15721`。
+6. 启动 Codex Desktop。
+
+菜单 `2` 不会恢复第三方 `auth.json`，因此不会用第三方登录文件覆盖官方登录文件。
 
 第三方 provider、模型映射、Base URL 和 key 都应在 CCSwitch 里管理，本启动器不会修改这些内容。
 
-### 3. 保存当前为官方状态
+### 3. 第三方模式：纯第三方/API-key
 
-官方网页登录成功并确认能正常进入 Codex 后，选择菜单 `3`。启动器会检查当前默认 `.codex`：
+适合只使用第三方 API-key 状态，不承诺官方插件、手机远程等官方能力可用。
 
-- 如果当前不像 API-key/custom 状态，就保存为官方 profile。
-- 如果当前仍像第三方状态，就拒绝保存，避免把错误状态缓存为官方。
+行为：
+
+1. 关闭旧的 Codex Desktop。
+2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方状态。
+3. 恢复第三方 `config.toml` 和第三方 `auth.json`。
+4. 重启或启动 CCSwitch。
+5. 启动 Codex Desktop。
+
+菜单 `3` 不会覆盖已保存的 official profile。之后仍可通过菜单 `1` 回到官方模式。
 
 ### 4. 检查当前状态
 
@@ -103,7 +114,7 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 - CCSwitch 是否安装和运行。
 - `127.0.0.1:15721` 是否监听。
 - 当前 `.codex` 是官方态、API-key 态、未知态还是不存在。
-- official / thirdparty profile 是否完整。
+- official profile、第三方路由配置、纯第三方/API-key 状态是否完整。
 - 桌面快捷方式是否指向当前启动器脚本。
 - 旧 `Start Codex With CC Switch` 快捷方式是否仍存在。
 
@@ -140,21 +151,15 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 .\codex-launcher.ps1 -Mode official
 ```
 
-如果 Codex 要求网页登录，用这台电脑上的浏览器完成官方 ChatGPT / OpenAI 登录。登录完成并确认能进入官方状态后，关闭 Codex。
+如果 Codex 要求网页登录，用这台电脑上的浏览器完成官方 ChatGPT / OpenAI 登录。登录完成并确认能进入官方状态后，后续切换时启动器会自动安全保存这台电脑自己的官方状态。
 
-第三步：保存这台电脑自己的官方状态。
-
-```powershell
-.\codex-launcher.ps1 -Mode saveofficial
-```
-
-保存过官方状态后，再运行官方模式应复用本机官方 profile，不应每次都跳网页登录。
+保存过官方状态后，再运行官方模式应复用本机 official profile，不应每次都跳网页登录。
 
 建立第三方状态：
 
 1. 先在 CCSwitch 里配置 provider、模型映射和第三方 key。
-2. 运行启动器并选择 `2`。
-3. 之后需要切回第三方时，继续选择 `2` 即可。
+2. 日常推荐运行启动器并选择 `2`，保留官方登录并使用第三方路由。
+3. 如果明确需要纯第三方/API-key 状态，再选择 `3`。
 
 ## 配置
 
@@ -174,7 +179,8 @@ notepad "$env:USERPROFILE\.codex-launcher\launcher-config.json"
 .\codex-launcher.ps1
 .\codex-launcher.ps1 -Mode official
 .\codex-launcher.ps1 -Mode thirdparty
-.\codex-launcher.ps1 -Mode saveofficial
+.\codex-launcher.ps1 -Mode thirdparty-preserve-auth
+.\codex-launcher.ps1 -Mode thirdparty-pure
 .\codex-launcher.ps1 -Mode bootstrap
 .\codex-launcher.ps1 -Mode doctor
 .\codex-launcher.ps1 -Mode check
@@ -185,6 +191,7 @@ notepad "$env:USERPROFILE\.codex-launcher\launcher-config.json"
 ```powershell
 .\codex-launcher.ps1 -Mode official -NoLaunch
 .\codex-launcher.ps1 -Mode thirdparty -NoLaunch
+.\codex-launcher.ps1 -Mode thirdparty-pure -NoLaunch
 ```
 
 ## 安全边界
