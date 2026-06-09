@@ -83,8 +83,9 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方登录文件。
 3. 只恢复已保存的第三方 `config.toml`。
 4. 保留当前官方 `auth.json`；如果当前不是官方登录态，则尝试从 official profile 只恢复 `auth.json`。
-5. 重启或启动 CCSwitch，并检查 `127.0.0.1:15721`。
-6. 启动 Codex Desktop。
+5. 开启 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=true`。
+6. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已开启。
+7. 启动 Codex Desktop。
 
 菜单 `2` 不会恢复第三方 `auth.json`，因此不会用第三方登录文件覆盖官方登录文件。
 
@@ -99,8 +100,9 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 1. 关闭旧的 Codex Desktop。
 2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方状态。
 3. 恢复第三方 `config.toml` 和第三方 `auth.json`。
-4. 重启或启动 CCSwitch。
-5. 启动 Codex Desktop。
+4. 关闭 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=false`。
+5. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已关闭。
+6. 启动 Codex Desktop。
 
 菜单 `3` 不会覆盖已保存的 official profile。之后仍可通过菜单 `1` 回到官方模式。
 
@@ -213,7 +215,7 @@ notepad "$env:USERPROFILE\.codex-launcher\launcher-config.json"
 - 把无法识别的 `auth.json` 当作 API-key 登录态自动移走。
 - 覆盖已有 official profile 而不先备份。
 - 管理第三方 key。
-- 修改 CCSwitch provider、Base URL、模型映射或本地路由配置。
+- 修改 CCSwitch provider、Base URL、模型映射、本地路由配置、数据库或第三方 key。
 - 修改 Windows 全局用户或机器环境变量。
 - 删除 `%USERPROFILE%\.codex`、`%USERPROFILE%\.cc-switch` 或任何 CCSwitch 数据库/配置目录。
 
