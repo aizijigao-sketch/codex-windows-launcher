@@ -53,7 +53,9 @@ Describe 'Codex Windows launcher documentation and configuration' {
         Assert-ContainsText $script:Readme '\.codex'
         Assert-ContainsText $script:Readme 'CCSwitch'
         Assert-ContainsText $script:Readme 'profiles'
-        Assert-ContainsText $script:Readme 'saveofficial|保存当前为官方状态|官方 profile'
+        Assert-ContainsText $script:Readme '保留官方登录'
+        Assert-ContainsText $script:Readme '纯第三方'
+        Assert-DoesNotContainText $script:Readme 'saveofficial|保存当前为官方状态|网页登录成功后点一次'
     }
 
     It 'documents first use and safety boundaries' {
@@ -141,11 +143,12 @@ Describe 'codex-launcher.ps1 static safety checks' {
             return
         }
 
-        Assert-ContainsText $script:Launcher 'saveofficial'
         Assert-ContainsText $script:Launcher 'Save-OfficialProfile'
         Assert-ContainsText $script:Launcher 'Restore-OfficialProfile'
         Assert-ContainsText $script:Launcher 'Save-OfficialProfileIfCurrentLooksOfficial'
         Assert-ContainsText $script:Launcher 'Test-CurrentLooksOfficialProfile'
+        Assert-ContainsText $script:Launcher 'Ensure-OfficialAuthForPreserveMode'
+        Assert-ContainsText $script:Launcher 'Restore-OfficialAuthOnly'
         Assert-ContainsText $script:Launcher 'before-\$ProfileName-save'
     }
 
@@ -155,7 +158,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
             return
         }
 
-        Assert-ContainsText $script:Launcher "ValidateSet\('official', 'thirdparty', 'saveofficial', 'check', 'doctor', 'bootstrap', 'menu'\)"
+        Assert-ContainsText $script:Launcher "ValidateSet\('official', 'thirdparty', 'thirdparty-preserve-auth', 'thirdparty-pure', 'check', 'doctor', 'bootstrap', 'menu'\)"
+        Assert-DoesNotContainText $script:Launcher "'saveofficial'"
         Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
         Assert-ContainsText $script:Launcher 'Invoke-Doctor'
         Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
@@ -201,6 +205,31 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Test-IsElevated'
         Assert-ContainsText $script:Launcher '当前是管理员窗口，无法可靠通过 Windows AppId 启动 Codex'
         Assert-ContainsText $script:Launcher '真实 Codex Desktop 的 codexPath'
+    }
+
+    It 'splits third-party modes by auth preservation behavior' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping third-party mode split check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'Start-ThirdPartyPreserveAuthMode'
+        Assert-ContainsText $script:Launcher 'Start-ThirdPartyPureMode'
+        Assert-ContainsText $script:Launcher 'Restore-ThirdPartyConfig'
+        Assert-ContainsText $script:Launcher 'Restore-ThirdPartyPureProfile'
+        Assert-ContainsText $script:Launcher "Files = @\('config\.toml', 'auth\.json'\)"
+        Assert-ContainsText $script:Launcher 'Restore-ProfileFiles -ProfileName ''thirdparty'' -ProfileDir \$Script:ThirdPartyProfileDir -Files @\(''config\.toml''\)'
+        Assert-ContainsText $script:Launcher 'Ensure-OfficialAuthForPreserveMode'
+
+        $preserveStart = $script:Launcher.IndexOf('function Start-ThirdPartyPreserveAuthMode')
+        $pureStart = $script:Launcher.IndexOf('function Start-ThirdPartyPureMode')
+        if ($preserveStart -lt 0 -or $pureStart -lt 0 -or $preserveStart -gt $pureStart) {
+            throw 'Third-party preserve-auth and pure mode functions must exist in the expected order.'
+        }
+        $preserveBody = $script:Launcher.Substring($preserveStart, $pureStart - $preserveStart)
+        if ($preserveBody -match 'Restore-ThirdPartyPureProfile|Restore-ThirdPartyProfile') {
+            throw 'Preserve-auth mode must not restore third-party auth.json.'
+        }
     }
 
     It 'treats unknown auth state conservatively' {
