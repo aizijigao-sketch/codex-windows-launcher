@@ -22,6 +22,9 @@ $Script:BackupDir = Join-Path $Script:LauncherHome 'backup'
 $Script:DefaultCodexHome = Join-Path $Script:UserProfile '.codex'
 $Script:ActiveConfigPath = Join-Path $Script:DefaultCodexHome 'config.toml'
 $Script:ActiveAuthPath = Join-Path $Script:DefaultCodexHome 'auth.json'
+$Script:CCSwitchHome = Join-Path $Script:UserProfile '.cc-switch'
+$Script:CCSwitchSettingsPath = Join-Path $Script:CCSwitchHome 'settings.json'
+$Script:CCSwitchBackupDir = Join-Path $Script:CCSwitchHome 'backups'
 $Script:ProfileDir = Join-Path $Script:LauncherHome 'profiles'
 $Script:ThirdPartyProfileDir = Join-Path $Script:ProfileDir 'thirdparty'
 $Script:OfficialProfileDir = Join-Path $Script:ProfileDir 'official'
@@ -845,6 +848,98 @@ function Backup-LauncherFile {
     return $backupPath
 }
 
+function Backup-CCSwitchSettingsFile {
+    param([switch]$NoWrite)
+
+    if (-not (Test-Path -LiteralPath $Script:CCSwitchSettingsPath -PathType Leaf)) {
+        return $null
+    }
+
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $backupPath = Join-Path $Script:CCSwitchBackupDir "settings.json.$timestamp.before-codex-enhancement.bak"
+
+    if ($NoWrite) {
+        Write-Info "NoLaunch: 将会备份 CCSwitch 设置到本机目录：$backupPath"
+        return $backupPath
+    }
+
+    Ensure-Directory -Path $Script:CCSwitchBackupDir
+    Copy-Item -LiteralPath $Script:CCSwitchSettingsPath -Destination $backupPath -Force
+    Write-Info '已备份 CCSwitch 设置文件到本机 .cc-switch\backups。'
+    return $backupPath
+}
+
+function Get-CCSwitchCodexEnhancementState {
+    if (-not (Test-Path -LiteralPath $Script:CCSwitchSettingsPath -PathType Leaf)) {
+        return 'missing'
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $Script:CCSwitchSettingsPath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return 'unknown'
+        }
+        $settings = $raw | ConvertFrom-Json
+        $property = $settings.PSObject.Properties['preserveCodexOfficialAuthOnSwitch']
+        if (-not $property) {
+            return 'unset'
+        }
+        if ([bool]$property.Value) {
+            return 'enabled'
+        }
+        return 'disabled'
+    } catch {
+        return 'unknown'
+    }
+}
+
+function Set-CCSwitchCodexEnhancement {
+    param(
+        [bool]$Enabled,
+        [switch]$NoWrite
+    )
+
+    $stateText = if ($Enabled) { '开启' } else { '关闭' }
+    if (-not (Test-Path -LiteralPath $Script:CCSwitchSettingsPath -PathType Leaf)) {
+        Write-Warn "未找到 CCSwitch 设置文件：$Script:CCSwitchSettingsPath"
+        Write-Next "请先打开一次 CCSwitch；本次仍会继续启动，但无法自动${stateText} Codex 应用增强。"
+        return $false
+    }
+
+    if ($NoWrite) {
+        Write-Info "NoLaunch: 将会${stateText} CCSwitch Codex 应用增强：preserveCodexOfficialAuthOnSwitch=$Enabled"
+        return $true
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $Script:CCSwitchSettingsPath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Warn 'CCSwitch 设置文件为空，无法自动修改 Codex 应用增强。'
+            return $false
+        }
+
+        $settings = $raw | ConvertFrom-Json
+        Backup-CCSwitchSettingsFile | Out-Null
+
+        $property = $settings.PSObject.Properties['preserveCodexOfficialAuthOnSwitch']
+        if ($property) {
+            $property.Value = $Enabled
+        } else {
+            $settings | Add-Member -MemberType NoteProperty -Name 'preserveCodexOfficialAuthOnSwitch' -Value $Enabled
+        }
+
+        $json = $settings | ConvertTo-Json -Depth 100
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($Script:CCSwitchSettingsPath, $json, $utf8NoBom)
+        Write-Ok "已${stateText} CCSwitch Codex 应用增强。"
+        return $true
+    } catch {
+        Write-Warn "修改 CCSwitch Codex 应用增强失败：$($_.Exception.Message)"
+        Write-Next '本次不会打印 CCSwitch settings.json 内容；请避免把该文件上传到公有仓库。'
+        return $false
+    }
+}
+
 function Save-ThirdPartyProfile {
     param([switch]$NoWrite)
 
@@ -1036,7 +1131,7 @@ function Test-ActiveConfigLooksThirdPartyRoute {
         return $false
     }
 
-    return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern '127\.0\.0\.1:15721|localhost:15721|model_provider\s*=\s*"custom"|\[model_providers\.custom\]|base_url\s*=' -Quiet)
+    return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern '127\.0\.0\.1:15721|localhost:15721' -Quiet)
 }
 
 function Test-CurrentLooksOfficialProfile {
@@ -1360,6 +1455,14 @@ function Invoke-Doctor {
         Write-Warn '未检测到本地路由监听：127.0.0.1:15721'
     }
 
+    switch (Get-CCSwitchCodexEnhancementState) {
+        'enabled' { Write-Ok 'CCSwitch Codex 应用增强：已开启。菜单 2 会使用这个状态。' }
+        'disabled' { Write-Warn 'CCSwitch Codex 应用增强：已关闭。菜单 3/官方模式会使用这个状态。' }
+        'unset' { Write-Warn 'CCSwitch Codex 应用增强：未设置。启动器会在菜单 2/3 自动写入。' }
+        'missing' { Write-Warn "未找到 CCSwitch 设置文件：$Script:CCSwitchSettingsPath" }
+        default { Write-Warn 'CCSwitch Codex 应用增强：无法安全识别。' }
+    }
+
     if (Test-Path -LiteralPath $Script:DefaultCodexHome -PathType Container) {
         Write-Ok "默认 .codex 目录存在：$Script:DefaultCodexHome"
     } else {
@@ -1500,6 +1603,7 @@ function Start-OfficialMode {
 
     Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
     Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch | Out-Null
+    Set-CCSwitchCodexEnhancement -Enabled $false -NoWrite:$NoLaunch | Out-Null
 
     if (Restore-OfficialProfile -NoWrite:$NoLaunch) {
         Write-Info '已找到官方状态缓存；将恢复它，不强制重新登录。'
@@ -1565,6 +1669,7 @@ function Restart-CCSwitchForThirdParty {
     while ((Get-Date) -lt $deadline) {
         if (Test-LocalPort -Port 15721) {
             Write-Ok 'CCSwitch 本地路由已就绪：127.0.0.1:15721'
+            Start-Sleep -Seconds 2
             return $true
         }
         Start-Sleep -Milliseconds 500
@@ -1572,6 +1677,29 @@ function Restart-CCSwitchForThirdParty {
 
     Write-ErrorLine '未检测到本地路由监听：127.0.0.1:15721，本次不会启动 Codex，避免继续走官方额度。'
     Write-Next '请确认 CCSwitch 已开启本地路由/自定义路由后重试。'
+    return $false
+}
+
+function Confirm-CCSwitchCodexEnhancement {
+    param(
+        [bool]$ExpectedEnabled,
+        [switch]$NoLaunch
+    )
+
+    $expectedText = if ($ExpectedEnabled) { '开启' } else { '关闭' }
+    if ($NoLaunch) {
+        Write-Info "NoLaunch: 将会确认 CCSwitch Codex 应用增强已${expectedText}。"
+        return $true
+    }
+
+    $state = Get-CCSwitchCodexEnhancementState
+    if (($ExpectedEnabled -and $state -eq 'enabled') -or ((-not $ExpectedEnabled) -and $state -eq 'disabled')) {
+        Write-Ok "CCSwitch Codex 应用增强已${expectedText}。"
+        return $true
+    }
+
+    Write-ErrorLine "CCSwitch Codex 应用增强未能确认${expectedText}，本次不会启动 Codex，避免继续使用错误额度。"
+    Write-Next "请打开 CCSwitch 设置页检查“Codex 应用增强 / 切换第三方时保留官方登录”，当前检测状态：$state"
     return $false
 }
 
@@ -1640,7 +1768,15 @@ function Start-ThirdPartyPreserveAuthMode {
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
     Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch | Out-Null
 
+    if (-not (Set-CCSwitchCodexEnhancement -Enabled $true -NoWrite:$NoLaunch)) {
+        return
+    }
+
     if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
+    }
+
+    if (-not (Confirm-CCSwitchCodexEnhancement -ExpectedEnabled $true -NoLaunch:$NoLaunch)) {
         return
     }
 
@@ -1679,7 +1815,15 @@ function Start-ThirdPartyPureMode {
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyPureProfile -NoWrite:$NoLaunch | Out-Null
 
+    if (-not (Set-CCSwitchCodexEnhancement -Enabled $false -NoWrite:$NoLaunch)) {
+        return
+    }
+
     if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
+    }
+
+    if (-not (Confirm-CCSwitchCodexEnhancement -ExpectedEnabled $false -NoLaunch:$NoLaunch)) {
         return
     }
 
