@@ -613,6 +613,7 @@ function Stop-LauncherProcess {
         [string]$DisplayName,
         [string]$PreferredPath,
         [string[]]$FallbackNames,
+        [int]$TimeoutSeconds = 8,
         [switch]$NoLaunch
     )
 
@@ -635,7 +636,7 @@ function Stop-LauncherProcess {
         if ($matches.Count -gt 0) {
             Write-Info "NoLaunch: would close $($matches.Count) $DisplayName process(es)."
         }
-        return
+        return $true
     }
 
     foreach ($proc in $matches) {
@@ -649,6 +650,21 @@ function Stop-LauncherProcess {
             Write-Warn "Could not close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
         }
     }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames) {
+        Write-Warn "$DisplayName 仍在运行，配置切换可能不会立即生效。请手动关闭后重试。"
+        return $false
+    }
+
+    return $true
 }
 
 function Set-EnvForChildLaunch {
@@ -994,6 +1010,14 @@ function Test-ActiveConfigLooksCustom {
     }
 
     return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern 'model_provider\s*=\s*"custom"|\[model_providers\.custom\]|127\.0\.0\.1:15721|base_url\s*=' -Quiet)
+}
+
+function Test-ActiveConfigLooksThirdPartyRoute {
+    if (-not (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf)) {
+        return $false
+    }
+
+    return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern '127\.0\.0\.1:15721|localhost:15721|model_provider\s*=\s*"custom"|\[model_providers\.custom\]|base_url\s*=' -Quiet)
 }
 
 function Test-CurrentLooksOfficialProfile {
@@ -1455,8 +1479,8 @@ function Start-OfficialMode {
         $codexProcessPath = $codexTarget.Value
     }
 
-    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch
-    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch
+    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
+    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch | Out-Null
 
     if (Restore-OfficialProfile -NoWrite:$NoLaunch) {
         Write-Info '已找到官方状态缓存；将恢复它，不强制重新登录。'
@@ -1499,10 +1523,11 @@ function Ensure-CCSwitchRunning {
 function Restart-CCSwitchForThirdParty {
     param(
         [string]$Path,
+        [int]$ReadyTimeoutSeconds = 20,
         [switch]$NoLaunch
     )
 
-    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $Path -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch
+    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $Path -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
 
     if (-not $NoLaunch) {
         Start-Sleep -Milliseconds 800
@@ -1512,15 +1537,65 @@ function Restart-CCSwitchForThirdParty {
         return $false
     }
 
-    if (-not $NoLaunch) {
-        Start-Sleep -Seconds 1
+    if ($NoLaunch) {
+        Write-Info 'NoLaunch: 将会等待 CCSwitch 本地路由端口 127.0.0.1:15721 就绪。'
+        return $true
     }
 
-    if (-not (Test-LocalPort -Port 15721)) {
-        Write-Warn '未检测到本地路由监听：127.0.0.1:15721。请确认 CCSwitch 本地路由已开启。'
+    $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-LocalPort -Port 15721) {
+            Write-Ok 'CCSwitch 本地路由已就绪：127.0.0.1:15721'
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-ErrorLine '未检测到本地路由监听：127.0.0.1:15721，本次不会启动 Codex，避免继续走官方额度。'
+    Write-Next '请确认 CCSwitch 已开启本地路由/自定义路由后重试。'
+    return $false
+}
+
+function Stop-ProcessesBeforeThirdPartySwitch {
+    param(
+        [string]$CodexPath,
+        [string]$CCSwitchPath,
+        [switch]$NoLaunch
+    )
+
+    Write-Info '正在切换第三方模式：先关闭 Codex 和 CCSwitch，确保新配置会被重新读取。'
+    $codexClosed = Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $CodexPath -FallbackNames $Script:CodexProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
+    $ccswitchClosed = Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $CCSwitchPath -FallbackNames $Script:CCSwitchProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
+
+    if (-not $codexClosed -or -not $ccswitchClosed) {
+        Write-ErrorLine 'Codex 或 CCSwitch 没有完全退出，已停止本次切换，避免继续使用旧路由/旧登录状态。'
+        Write-Next '请手动关闭 Codex 和 CCSwitch 后再运行启动器。'
+        return $false
+    }
+
+    if (-not $NoLaunch) {
+        Start-Sleep -Milliseconds 500
     }
 
     return $true
+}
+
+function Confirm-ThirdPartyRouteConfigReady {
+    param([switch]$NoLaunch)
+
+    if ($NoLaunch) {
+        Write-Info 'NoLaunch: 将会检查当前 config.toml 是否为第三方/CCSwitch 路由配置。'
+        return $true
+    }
+
+    if (Test-ActiveConfigLooksThirdPartyRoute) {
+        Write-Ok '当前 config.toml 已切换为第三方/CCSwitch 路由配置。'
+        return $true
+    }
+
+    Write-ErrorLine '当前 config.toml 不像第三方/CCSwitch 路由配置，本次不会启动 Codex。'
+    Write-Next "请先保存第三方路由配置，或检查 $Script:ThirdPartyProfileDir\config.toml。"
+    return $false
 }
 
 function Start-ThirdPartyPreserveAuthMode {
@@ -1538,10 +1613,17 @@ function Start-ThirdPartyPreserveAuthMode {
         $codexProcessPath = $codexTarget.Value
     }
 
-    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch
+    if (-not (Stop-ProcessesBeforeThirdPartySwitch -CodexPath $codexProcessPath -CCSwitchPath $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
+    }
+
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
     Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch | Out-Null
+
+    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
+        return
+    }
 
     if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
         return
@@ -1552,6 +1634,12 @@ function Start-ThirdPartyPreserveAuthMode {
 
 function Start-ThirdPartyPureMode {
     param($Config, [switch]$NoLaunch)
+
+    if (-not (Test-ProfileComplete -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml', 'auth.json'))) {
+        Write-ErrorLine '纯第三方/API-key 状态不完整：需要 thirdparty profile 同时包含 config.toml 和 auth.json。'
+        Write-Next '如果只想使用第三方路由并保留官方登录，请选择菜单 2。'
+        return
+    }
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if (-not $codexTarget) {
@@ -1565,9 +1653,16 @@ function Start-ThirdPartyPureMode {
         $codexProcessPath = $codexTarget.Value
     }
 
-    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch
+    if (-not (Stop-ProcessesBeforeThirdPartySwitch -CodexPath $codexProcessPath -CCSwitchPath $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
+    }
+
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyPureProfile -NoWrite:$NoLaunch | Out-Null
+
+    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
+        return
+    }
 
     if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
         return
