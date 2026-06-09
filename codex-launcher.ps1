@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('official', 'thirdparty', 'saveofficial', 'check', 'doctor', 'bootstrap', 'menu')]
+    [ValidateSet('official', 'thirdparty', 'thirdparty-preserve-auth', 'thirdparty-pure', 'check', 'doctor', 'bootstrap', 'menu')]
     [string]$Mode = 'menu',
 
     [switch]$NoLaunch
@@ -833,6 +833,7 @@ function Save-ProfileFiles {
     param(
         [string]$ProfileName,
         [string]$ProfileDir,
+        [string[]]$Files = @('config.toml', 'auth.json'),
         [switch]$NoWrite
     )
 
@@ -841,7 +842,7 @@ function Save-ProfileFiles {
     }
 
     $saved = $false
-    foreach ($name in @('config.toml', 'auth.json')) {
+    foreach ($name in $Files) {
         $source = Join-Path $Script:DefaultCodexHome $name
         $target = Join-Path $ProfileDir $name
         if (Test-Path -LiteralPath $source -PathType Leaf) {
@@ -866,11 +867,12 @@ function Restore-ProfileFiles {
     param(
         [string]$ProfileName,
         [string]$ProfileDir,
+        [string[]]$Files = @('config.toml', 'auth.json'),
         [switch]$NoWrite
     )
 
     $restored = $false
-    foreach ($name in @('config.toml', 'auth.json')) {
+    foreach ($name in $Files) {
         $source = Join-Path $ProfileDir $name
         $target = Join-Path $Script:DefaultCodexHome $name
         if (Test-Path -LiteralPath $source -PathType Leaf) {
@@ -908,6 +910,16 @@ function Restore-OfficialProfile {
     return (Restore-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -NoWrite:$NoWrite)
 }
 
+function Restore-OfficialAuthOnly {
+    param([switch]$NoWrite)
+
+    $restored = Restore-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -Files @('auth.json') -NoWrite:$NoWrite
+    if (-not $restored) {
+        Write-Warn '没有找到已保存的官方登录文件；保留官方登录的第三方模式可能需要先完成一次官方登录。'
+    }
+    return $restored
+}
+
 function Restore-ThirdPartyProfile {
     param([switch]$NoWrite)
 
@@ -915,6 +927,26 @@ function Restore-ThirdPartyProfile {
     if (-not $restored) {
         Write-Warn '没有找到已保存的第三方状态；第三方模式会沿用当前默认 .codex 状态。'
     }
+}
+
+function Restore-ThirdPartyConfig {
+    param([switch]$NoWrite)
+
+    $restored = Restore-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml') -NoWrite:$NoWrite
+    if (-not $restored) {
+        Write-Warn '没有找到已保存的第三方路由配置；会沿用当前默认 config.toml。'
+    }
+    return $restored
+}
+
+function Restore-ThirdPartyPureProfile {
+    param([switch]$NoWrite)
+
+    $restored = Restore-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml', 'auth.json') -NoWrite:$NoWrite
+    if (-not $restored) {
+        Write-Warn '没有找到已保存的纯第三方状态；纯第三方模式会沿用当前默认 .codex 状态。'
+    }
+    return $restored
 }
 
 function Get-AuthState {
@@ -940,7 +972,7 @@ function Get-AuthState {
             }
         }
         foreach ($name in $names) {
-            if ($name -match '(?i)chatgpt|oauth|token') {
+            if ($name -match '(?i)chatgpt|oauth') {
                 return 'official-like'
             }
         }
@@ -990,6 +1022,35 @@ function Save-OfficialProfileIfCurrentLooksOfficial {
     }
 
     Write-Warn '当前默认 .codex 不像官方登录态；不会保存为官方状态，避免误缓存第三方状态。'
+    return $false
+}
+
+function Save-OfficialAuthOnlyIfCurrentLooksOfficial {
+    param([switch]$NoWrite)
+
+    if ((Get-AuthState -Path $Script:ActiveAuthPath) -ne 'official-like') {
+        return $false
+    }
+
+    Write-Info '当前 auth.json 看起来是官方登录态；会保存官方登录文件。'
+    Save-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -Files @('auth.json') -NoWrite:$NoWrite | Out-Null
+    return $true
+}
+
+function Ensure-OfficialAuthForPreserveMode {
+    param([switch]$NoWrite)
+
+    $authState = Get-AuthState -Path $Script:ActiveAuthPath
+    if ($authState -eq 'official-like') {
+        Save-OfficialAuthOnlyIfCurrentLooksOfficial -NoWrite:$NoWrite | Out-Null
+        return $true
+    }
+
+    if (Restore-OfficialAuthOnly -NoWrite:$NoWrite) {
+        return $true
+    }
+
+    Write-Warn '保留官方登录的第三方模式没有找到可确认的官方登录态；不会恢复第三方 auth.json。'
     return $false
 }
 
@@ -1085,21 +1146,34 @@ function Repair-ActiveConfigForOfficial {
 }
 
 function Test-ProfileComplete {
-    param([string]$ProfileDir)
+    param(
+        [string]$ProfileDir,
+        [string[]]$Files = @('config.toml', 'auth.json')
+    )
 
-    $configPath = Join-Path $ProfileDir 'config.toml'
-    $authPath = Join-Path $ProfileDir 'auth.json'
-    return ((Test-Path -LiteralPath $configPath -PathType Leaf) -and (Test-Path -LiteralPath $authPath -PathType Leaf))
+    foreach ($name in $Files) {
+        $path = Join-Path $ProfileDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return $false
+        }
+    }
+    return $true
 }
 
 function Test-ProfilePartial {
-    param([string]$ProfileDir)
+    param(
+        [string]$ProfileDir,
+        [string[]]$Files = @('config.toml', 'auth.json')
+    )
 
-    $configPath = Join-Path $ProfileDir 'config.toml'
-    $authPath = Join-Path $ProfileDir 'auth.json'
-    $hasConfig = Test-Path -LiteralPath $configPath -PathType Leaf
-    $hasAuth = Test-Path -LiteralPath $authPath -PathType Leaf
-    return (($hasConfig -or $hasAuth) -and -not ($hasConfig -and $hasAuth))
+    $existing = 0
+    foreach ($name in $Files) {
+        $path = Join-Path $ProfileDir $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $existing++
+        }
+    }
+    return (($existing -gt 0) -and ($existing -lt $Files.Count))
 }
 
 function Test-DesktopShortcutCurrent {
@@ -1119,7 +1193,7 @@ function Detect-ExistingLauncherState {
     $officialExists = Test-Path -LiteralPath $Script:OfficialProfileDir -PathType Container
     $thirdPartyExists = Test-Path -LiteralPath $Script:ThirdPartyProfileDir -PathType Container
     $officialPartial = Test-ProfilePartial -ProfileDir $Script:OfficialProfileDir
-    $thirdPartyPartial = Test-ProfilePartial -ProfileDir $Script:ThirdPartyProfileDir
+    $thirdPartyPartial = Test-ProfilePartial -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml')
     $desktopShortcut = Get-DesktopShortcutPath
     $desktopShortcutExists = Test-Path -LiteralPath $desktopShortcut -PathType Leaf
     $desktopShortcutCurrent = Test-DesktopShortcutCurrent
@@ -1153,7 +1227,9 @@ function Detect-ExistingLauncherState {
         OfficialProfileExists = $officialExists
         ThirdPartyProfileExists = $thirdPartyExists
         OfficialProfileComplete = (Test-ProfileComplete -ProfileDir $Script:OfficialProfileDir)
-        ThirdPartyProfileComplete = (Test-ProfileComplete -ProfileDir $Script:ThirdPartyProfileDir)
+        OfficialAuthComplete = (Test-ProfileComplete -ProfileDir $Script:OfficialProfileDir -Files @('auth.json'))
+        ThirdPartyProfileComplete = (Test-ProfileComplete -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml'))
+        ThirdPartyPureProfileComplete = (Test-ProfileComplete -ProfileDir $Script:ThirdPartyProfileDir)
         OfficialProfilePartial = $officialPartial
         ThirdPartyProfilePartial = $thirdPartyPartial
         DesktopShortcutExists = $desktopShortcutExists
@@ -1270,14 +1346,20 @@ function Invoke-Doctor {
     }
 
     if ($state.ThirdPartyProfileComplete) {
-        Write-Ok "第三方 profile 完整：$Script:ThirdPartyProfileDir"
+        Write-Ok "第三方路由配置可用：$Script:ThirdPartyProfileDir"
     } elseif ($state.ThirdPartyProfilePartial) {
-        Write-Warn "第三方 profile 不完整：$Script:ThirdPartyProfileDir"
+        Write-Warn "第三方路由配置不完整：$Script:ThirdPartyProfileDir"
     } else {
-        Write-Warn "未保存第三方 profile：$Script:ThirdPartyProfileDir"
+        Write-Warn "未保存第三方路由配置：$Script:ThirdPartyProfileDir"
     }
 
-    Write-Next '新电脑建议顺序：bootstrap -> official -> saveofficial -> thirdparty。'
+    if ($state.ThirdPartyPureProfileComplete) {
+        Write-Ok '纯第三方/API-key 状态可用。'
+    } else {
+        Write-Warn '纯第三方/API-key 状态不完整；菜单 3 可能沿用当前登录文件。'
+    }
+
+    Write-Next '新电脑建议顺序：bootstrap -> official -> thirdparty-preserve-auth。'
 }
 
 function Invoke-Bootstrap {
@@ -1301,7 +1383,7 @@ function Invoke-Bootstrap {
     Invoke-Doctor -Config (Read-LauncherConfig)
 
     Write-Next '如果 Codex 已安装，下一步运行官方模式并完成网页登录：.\codex-launcher.ps1 -Mode official'
-    Write-Next '网页登录成功并关闭 Codex 后，保存公司/本机自己的官方状态：.\codex-launcher.ps1 -Mode saveofficial'
+    Write-Next '之后切换第三方时，启动器会自动安全保存可确认的官方登录状态。'
 }
 
 function Invoke-Check {
@@ -1387,12 +1469,6 @@ function Start-OfficialMode {
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv $Script:ThirdPartyEnvVars -NoLaunch:$NoLaunch
 }
 
-function Save-CurrentAsOfficialMode {
-    param([switch]$NoLaunch)
-
-    Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
-}
-
 function Ensure-CCSwitchRunning {
     param(
         [string]$Path,
@@ -1420,7 +1496,34 @@ function Ensure-CCSwitchRunning {
     return $true
 }
 
-function Start-ThirdPartyMode {
+function Restart-CCSwitchForThirdParty {
+    param(
+        [string]$Path,
+        [switch]$NoLaunch
+    )
+
+    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $Path -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch
+
+    if (-not $NoLaunch) {
+        Start-Sleep -Milliseconds 800
+    }
+
+    if (-not (Ensure-CCSwitchRunning -Path $Path -NoLaunch:$NoLaunch)) {
+        return $false
+    }
+
+    if (-not $NoLaunch) {
+        Start-Sleep -Seconds 1
+    }
+
+    if (-not (Test-LocalPort -Port 15721)) {
+        Write-Warn '未检测到本地路由监听：127.0.0.1:15721。请确认 CCSwitch 本地路由已开启。'
+    }
+
+    return $true
+}
+
+function Start-ThirdPartyPreserveAuthMode {
     param($Config, [switch]$NoLaunch)
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
@@ -1435,18 +1538,49 @@ function Start-ThirdPartyMode {
         $codexProcessPath = $codexTarget.Value
     }
 
-    if (-not (Ensure-CCSwitchRunning -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
-        return
-    }
     Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
-    Restore-ThirdPartyProfile -NoWrite:$NoLaunch
+    Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
+    Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch | Out-Null
 
-    if (-not $NoLaunch) {
-        Start-Sleep -Seconds 1
+    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
     }
 
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
+}
+
+function Start-ThirdPartyPureMode {
+    param($Config, [switch]$NoLaunch)
+
+    $codexTarget = Resolve-CodexLaunchTarget -Config $Config
+    if (-not $codexTarget) {
+        Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，然后运行 .\codex-launcher.ps1 -Mode bootstrap'
+        return
+    }
+
+    $ccswitchPath = Resolve-CCSwitchPath -Config $Config
+    $codexProcessPath = $Config.codexPath
+    if ($codexTarget -and $codexTarget.Kind -eq 'Exe') {
+        $codexProcessPath = $codexTarget.Value
+    }
+
+    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch
+    Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
+    Restore-ThirdPartyPureProfile -NoWrite:$NoLaunch | Out-Null
+
+    if (-not (Restart-CCSwitchForThirdParty -Path $ccswitchPath -NoLaunch:$NoLaunch)) {
+        return
+    }
+
+    Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
+}
+
+function Start-ThirdPartyMode {
+    param($Config, [switch]$NoLaunch)
+
+    Write-Warn 'thirdparty 命令已作为兼容别名处理：等同于 thirdparty-preserve-auth。'
+    Start-ThirdPartyPreserveAuthMode -Config $Config -NoLaunch:$NoLaunch
 }
 
 function Show-Menu {
@@ -1458,11 +1592,11 @@ function Show-Menu {
         Write-Host ' Codex Windows 启动器'
         Write-Host '=============================='
         Write-Host '1. 官方模式：恢复官方登录态并启动 Codex'
-        Write-Host '   - 首次可能需要网页登录；保存过官方状态后会复用，不应每次登录。'
-        Write-Host '2. 第三方模式：恢复 CCSwitch/custom 状态并重载 Codex'
-        Write-Host '   - 切换前如果当前是官方态，会自动保存官方状态。'
-        Write-Host '3. 保存当前为官方状态'
-        Write-Host '   - 官方网页登录成功后点一次；当前若是第三方/API-key 状态不会保存。'
+        Write-Host '   - 首次可能需要网页登录；之后会自动安全保存并复用官方状态。'
+        Write-Host '2. 第三方模式：保留官方登录信息并使用第三方路由'
+        Write-Host '   - 日常推荐；只切换路由配置，不恢复第三方 auth.json。'
+        Write-Host '3. 第三方模式：纯第三方/API-key'
+        Write-Host '   - 备用模式；可恢复第三方 auth.json，但不会覆盖官方缓存。'
         Write-Host '4. 诊断/体检当前状态'
         Write-Host '   - 只读检查，不修改任何文件。'
         Write-Host '5. 初始化/升级本机启动器'
@@ -1472,8 +1606,8 @@ function Show-Menu {
 
         switch ($choice) {
             '1' { Start-OfficialMode -Config $Config -NoLaunch:$NoLaunch; return }
-            '2' { Start-ThirdPartyMode -Config $Config -NoLaunch:$NoLaunch; return }
-            '3' { Save-CurrentAsOfficialMode -NoLaunch:$NoLaunch; return }
+            '2' { Start-ThirdPartyPreserveAuthMode -Config $Config -NoLaunch:$NoLaunch; return }
+            '3' { Start-ThirdPartyPureMode -Config $Config -NoLaunch:$NoLaunch; return }
             '4' { Invoke-Doctor -Config (Read-LauncherConfig); if ($NoLaunch) { return } }
             '5' { Invoke-Bootstrap -Config $Config -NoLaunch:$NoLaunch; return }
             '6' { return }
@@ -1507,7 +1641,8 @@ $config = Load-LauncherConfig
 switch ($Mode) {
     'official' { Start-OfficialMode -Config $config -NoLaunch:$NoLaunch }
     'thirdparty' { Start-ThirdPartyMode -Config $config -NoLaunch:$NoLaunch }
-    'saveofficial' { Save-CurrentAsOfficialMode -NoLaunch:$NoLaunch }
+    'thirdparty-preserve-auth' { Start-ThirdPartyPreserveAuthMode -Config $config -NoLaunch:$NoLaunch }
+    'thirdparty-pure' { Start-ThirdPartyPureMode -Config $config -NoLaunch:$NoLaunch }
     'menu' { Show-Menu -Config $config }
 }
 
