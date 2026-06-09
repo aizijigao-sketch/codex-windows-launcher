@@ -217,6 +217,13 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Start-ThirdPartyPureMode'
         Assert-ContainsText $script:Launcher 'Restore-ThirdPartyConfig'
         Assert-ContainsText $script:Launcher 'Restore-ThirdPartyPureProfile'
+        Assert-ContainsText $script:Launcher 'Stop-ProcessesBeforeThirdPartySwitch'
+        Assert-ContainsText $script:Launcher 'Confirm-ThirdPartyRouteConfigReady'
+        Assert-ContainsText $script:Launcher 'Test-ActiveConfigLooksThirdPartyRoute'
+        Assert-ContainsText $script:Launcher '确保新配置会被重新读取'
+        Assert-ContainsText $script:Launcher '已停止本次切换，避免继续使用旧路由/旧登录状态'
+        Assert-ContainsText $script:Launcher '本次不会启动 Codex'
+        Assert-ContainsText $script:Launcher '纯第三方/API-key 状态不完整'
         Assert-ContainsText $script:Launcher "Files = @\('config\.toml', 'auth\.json'\)"
         Assert-ContainsText $script:Launcher 'Restore-ProfileFiles -ProfileName ''thirdparty'' -ProfileDir \$Script:ThirdPartyProfileDir -Files @\(''config\.toml''\)'
         Assert-ContainsText $script:Launcher 'Ensure-OfficialAuthForPreserveMode'
@@ -230,6 +237,43 @@ Describe 'codex-launcher.ps1 static safety checks' {
         if ($preserveBody -match 'Restore-ThirdPartyPureProfile|Restore-ThirdPartyProfile') {
             throw 'Preserve-auth mode must not restore third-party auth.json.'
         }
+
+        $prepIndex = $preserveBody.IndexOf('Stop-ProcessesBeforeThirdPartySwitch')
+        $restoreIndex = $preserveBody.IndexOf('Restore-ThirdPartyConfig')
+        $confirmIndex = $preserveBody.IndexOf('Confirm-ThirdPartyRouteConfigReady')
+        $restartIndex = $preserveBody.IndexOf('Restart-CCSwitchForThirdParty')
+        if ($prepIndex -lt 0 -or $restoreIndex -lt 0 -or $confirmIndex -lt 0 -or $restartIndex -lt 0 -or $prepIndex -gt $restoreIndex -or $restoreIndex -gt $confirmIndex -or $confirmIndex -gt $restartIndex) {
+            throw 'Preserve-auth mode must close Codex/CCSwitch, restore config, confirm route config, then restart CCSwitch.'
+        }
+
+        $pureEnd = $script:Launcher.IndexOf('function Start-ThirdPartyMode')
+        $pureBody = $script:Launcher.Substring($pureStart, $pureEnd - $pureStart)
+        if ($pureBody -notmatch "Test-ProfileComplete -ProfileDir \`$Script:ThirdPartyProfileDir -Files @\('config\.toml', 'auth\.json'\)") {
+            throw 'Pure third-party mode must require both config.toml and auth.json before switching.'
+        }
+        $purePrepIndex = $pureBody.IndexOf('Stop-ProcessesBeforeThirdPartySwitch')
+        $pureRestoreIndex = $pureBody.IndexOf('Restore-ThirdPartyPureProfile')
+        $pureConfirmIndex = $pureBody.IndexOf('Confirm-ThirdPartyRouteConfigReady')
+        $pureRestartIndex = $pureBody.IndexOf('Restart-CCSwitchForThirdParty')
+        if ($purePrepIndex -lt 0 -or $pureRestoreIndex -lt 0 -or $pureConfirmIndex -lt 0 -or $pureRestartIndex -lt 0 -or $purePrepIndex -gt $pureRestoreIndex -or $pureRestoreIndex -gt $pureConfirmIndex -or $pureConfirmIndex -gt $pureRestartIndex) {
+            throw 'Pure third-party mode must close Codex/CCSwitch, restore config/auth, confirm route config, then restart CCSwitch.'
+        }
+    }
+
+    It 'waits for Codex and CCSwitch to exit before third-party switching' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping third-party process cleanup check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'TimeoutSeconds = 8'
+        Assert-ContainsText $script:Launcher 'Test-ProcessRunning -Path \$PreferredPath -Names \$FallbackNames'
+        Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 250'
+        Assert-ContainsText $script:Launcher 'Codex 或 CCSwitch 没有完全退出'
+        Assert-ContainsText $script:Launcher 'ReadyTimeoutSeconds = 20'
+        Assert-ContainsText $script:Launcher 'CCSwitch 本地路由已就绪'
+        Assert-ContainsText $script:Launcher '未检测到本地路由监听：127\.0\.0\.1:15721，本次不会启动 Codex'
+        Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 500'
     }
 
     It 'treats unknown auth state conservatively' {
