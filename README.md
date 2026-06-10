@@ -1,5 +1,7 @@
 ﻿# Codex Windows 启动器
 
+当前版本：`v0.4.1`
+
 一个 Windows PowerShell 启动器，用来在 Codex Desktop 的官方登录态和第三方路由状态之间切换：
 
 - 官方模式：恢复已保存的 ChatGPT / OpenAI 官方登录态并启动 Codex。
@@ -85,7 +87,8 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 4. 保留当前官方 `auth.json`；如果当前不是官方登录态，则尝试从 official profile 只恢复 `auth.json`。
 5. 开启 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=true`。
 6. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已开启。
-7. 启动 Codex Desktop。
+7. 再次恢复并确认官方 `auth.json`，防止 CCSwitch 重启接管后把最终状态改回 API-key。
+8. 启动 Codex Desktop。
 
 菜单 `2` 不会恢复第三方 `auth.json`，因此不会用第三方登录文件覆盖官方登录文件。
 
