@@ -8,6 +8,8 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$Script:LauncherVersion = 'v0.4.1'
+
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $OutputEncoding = [Console]::OutputEncoding
@@ -1192,6 +1194,25 @@ function Ensure-OfficialAuthForPreserveMode {
     return $false
 }
 
+function Confirm-OfficialAuthForPreserveMode {
+    param([switch]$NoLaunch)
+
+    if ($NoLaunch) {
+        Write-Info 'NoLaunch: 将会确认最终 auth.json 仍是官方 ChatGPT/OAuth 登录态。'
+        return $true
+    }
+
+    $authState = Get-AuthState -Path $Script:ActiveAuthPath
+    if ($authState -eq 'official-like') {
+        Write-Ok '最终 auth.json 已确认是官方 ChatGPT/OAuth 登录态。'
+        return $true
+    }
+
+    Write-ErrorLine "最终 auth.json 不是官方登录态，而是 $authState；本次不会启动 Codex，避免继续显示 API 密钥登录。"
+    Write-Next '请先用菜单 1 完成官方网页登录并保存官方状态，再选择菜单 2。'
+    return $false
+}
+
 function Disable-ApiKeyAuthForOfficial {
     param([switch]$NoWrite)
 
@@ -1381,7 +1402,7 @@ function Invoke-Doctor {
     param($Config)
 
     Write-Host ''
-    Write-Host 'Codex Windows Launcher 诊断'
+    Write-Host "Codex Windows Launcher 诊断 $Script:LauncherVersion"
     Write-Host '---------------------------'
 
     $state = Detect-ExistingLauncherState
@@ -1512,7 +1533,7 @@ function Invoke-Bootstrap {
     param($Config, [switch]$NoLaunch)
 
     Write-Host ''
-    Write-Host 'Codex Windows Launcher 初始化'
+    Write-Host "Codex Windows Launcher 初始化 $Script:LauncherVersion"
     Write-Host '-----------------------------'
 
     $state = Detect-ExistingLauncherState
@@ -1766,7 +1787,11 @@ function Start-ThirdPartyPreserveAuthMode {
 
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
-    Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch | Out-Null
+    if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
+        Write-ErrorLine '菜单 2 需要可确认的官方登录态，本次不会启动 Codex。'
+        Write-Next '请先选择菜单 1 完成官方登录，然后再选择菜单 2。'
+        return
+    }
 
     if (-not (Set-CCSwitchCodexEnhancement -Enabled $true -NoWrite:$NoLaunch)) {
         return
@@ -1777,6 +1802,15 @@ function Start-ThirdPartyPreserveAuthMode {
     }
 
     if (-not (Confirm-CCSwitchCodexEnhancement -ExpectedEnabled $true -NoLaunch:$NoLaunch)) {
+        return
+    }
+
+    if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
+        Write-ErrorLine 'CCSwitch 重启后未能恢复官方登录态，本次不会启动 Codex。'
+        return
+    }
+
+    if (-not (Confirm-OfficialAuthForPreserveMode -NoLaunch:$NoLaunch)) {
         return
     }
 
@@ -1847,7 +1881,7 @@ function Show-Menu {
     while ($true) {
         Write-Host ''
         Write-Host '=============================='
-        Write-Host ' Codex Windows 启动器'
+        Write-Host " Codex Windows 启动器 $Script:LauncherVersion"
         Write-Host '=============================='
         Write-Host '1. 官方模式：恢复官方登录态并启动 Codex'
         Write-Host '   - 首次可能需要网页登录；之后会自动安全保存并复用官方状态。'
