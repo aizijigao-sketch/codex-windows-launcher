@@ -162,6 +162,9 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-DoesNotContainText $script:Launcher "'saveofficial'"
         Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
         Assert-ContainsText $script:Launcher 'Invoke-Doctor'
+        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.1'''
+        Assert-ContainsText $script:Launcher 'Codex Windows 启动器 \$Script:LauncherVersion'
+        Assert-ContainsText $script:Launcher 'Codex Windows Launcher 诊断 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
         Assert-ContainsText $script:Launcher 'Read-LauncherConfig'
         Assert-ContainsText $script:Launcher 'Write-LauncherConfigIfMissing'
@@ -222,6 +225,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Set-CCSwitchCodexEnhancement'
         Assert-ContainsText $script:Launcher 'Confirm-CCSwitchCodexEnhancement'
         Assert-ContainsText $script:Launcher 'preserveCodexOfficialAuthOnSwitch'
+        Assert-ContainsText $script:Launcher 'Confirm-OfficialAuthForPreserveMode'
+        Assert-ContainsText $script:Launcher '最终 auth.json 已确认是官方 ChatGPT/OAuth 登录态'
         Assert-ContainsText $script:Launcher 'Test-ActiveConfigLooksThirdPartyRoute'
         Assert-ContainsText $script:Launcher 'Get-RunningExecutablePathByNames'
         Assert-ContainsText $script:Launcher '确保新配置会被重新读取'
@@ -248,8 +253,11 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $confirmIndex = $preserveBody.IndexOf('Confirm-ThirdPartyRouteConfigReady')
         $restartIndex = $preserveBody.IndexOf('Restart-CCSwitchForThirdParty')
         $enhanceConfirmIndex = $preserveBody.IndexOf('Confirm-CCSwitchCodexEnhancement -ExpectedEnabled $true')
-        if ($prepIndex -lt 0 -or $restoreIndex -lt 0 -or $enableIndex -lt 0 -or $restartIndex -lt 0 -or $enhanceConfirmIndex -lt 0 -or $confirmIndex -lt 0 -or $prepIndex -gt $restoreIndex -or $restoreIndex -gt $enableIndex -or $enableIndex -gt $restartIndex -or $restartIndex -gt $enhanceConfirmIndex -or $enhanceConfirmIndex -gt $confirmIndex) {
-            throw 'Preserve-auth mode must close Codex/CCSwitch, restore config, enable CCSwitch Codex enhancement, restart CCSwitch, then confirm enhancement and route config.'
+        $firstAuthIndex = $preserveBody.IndexOf('Ensure-OfficialAuthForPreserveMode')
+        $secondAuthIndex = $preserveBody.IndexOf('Ensure-OfficialAuthForPreserveMode', $firstAuthIndex + 1)
+        $officialConfirmIndex = $preserveBody.IndexOf('Confirm-OfficialAuthForPreserveMode')
+        if ($prepIndex -lt 0 -or $restoreIndex -lt 0 -or $firstAuthIndex -lt 0 -or $enableIndex -lt 0 -or $restartIndex -lt 0 -or $enhanceConfirmIndex -lt 0 -or $secondAuthIndex -lt 0 -or $officialConfirmIndex -lt 0 -or $confirmIndex -lt 0 -or $prepIndex -gt $restoreIndex -or $restoreIndex -gt $firstAuthIndex -or $firstAuthIndex -gt $enableIndex -or $enableIndex -gt $restartIndex -or $restartIndex -gt $enhanceConfirmIndex -or $enhanceConfirmIndex -gt $secondAuthIndex -or $secondAuthIndex -gt $officialConfirmIndex -or $officialConfirmIndex -gt $confirmIndex) {
+            throw 'Preserve-auth mode must close Codex/CCSwitch, restore config, restore official auth, enable CCSwitch Codex enhancement, restart CCSwitch, then re-restore and confirm official auth before route config.'
         }
 
         $pureEnd = $script:Launcher.IndexOf('function Start-ThirdPartyMode')
