@@ -8,7 +8,7 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$Script:LauncherVersion = 'v0.4.1'
+$Script:LauncherVersion = 'v0.4.2'
 
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -24,6 +24,9 @@ $Script:BackupDir = Join-Path $Script:LauncherHome 'backup'
 $Script:DefaultCodexHome = Join-Path $Script:UserProfile '.codex'
 $Script:ActiveConfigPath = Join-Path $Script:DefaultCodexHome 'config.toml'
 $Script:ActiveAuthPath = Join-Path $Script:DefaultCodexHome 'auth.json'
+$Script:CodexGlobalStatePath = Join-Path $Script:DefaultCodexHome '.codex-global-state.json'
+$Script:LauncherStateDir = Join-Path $Script:LauncherHome 'state'
+$Script:CodexUiStateSnapshotPath = Join-Path $Script:LauncherStateDir 'codex-ui-state.json'
 $Script:CCSwitchHome = Join-Path $Script:UserProfile '.cc-switch'
 $Script:CCSwitchSettingsPath = Join-Path $Script:CCSwitchHome 'settings.json'
 $Script:CCSwitchBackupDir = Join-Path $Script:CCSwitchHome 'backups'
@@ -39,6 +42,37 @@ $Script:ThirdPartyEnvVars = @(
 )
 $Script:CodexProcessNames = @('Codex', 'codex', 'OpenAI Codex')
 $Script:CCSwitchProcessNames = @('ccswitch', 'cc-switch', 'CCSwitch')
+$Script:CodexUiStateTopLevelKeys = @(
+    'electron-main-window-bounds',
+    'electron-avatar-overlay-bounds',
+    'electron-avatar-overlay-open',
+    'electron-saved-workspace-roots',
+    'active-workspace-roots',
+    'project-order',
+    'project-writable-roots',
+    'pinned-project-ids',
+    'pinned-thread-ids',
+    'use-copilot-auth-if-available'
+)
+$Script:CodexUiStateAtomKeys = @(
+    'agent-mode-by-host-id',
+    'composer-auto-context-enabled',
+    'diff-filter',
+    'sidebar-collapsed-groups',
+    'sidebar-collapsed-sections-v1',
+    'sidebar-width',
+    'skip-full-access-confirm',
+    'has-seen-fast-mode-announcement',
+    'has-seen-fast-mode-home-banner',
+    'has-seen-knowledge-work-announcement',
+    'has-seen-codex-mobile-announcement',
+    'codex-mobile-sidebar-nav-item-clicked-v1',
+    'electron:onboarding-plugin-checklist-active',
+    'electron:onboarding-primary-runtime-install-ready',
+    'electron:onboarding-primary-runtime-install-requested',
+    'electron:onboarding-projectless-completed',
+    'electron:onboarding-welcome-pending'
+)
 
 function Write-Info {
     param([string]$Message)
@@ -871,6 +905,185 @@ function Backup-CCSwitchSettingsFile {
     return $backupPath
 }
 
+function New-JsonSerializer {
+    Add-Type -AssemblyName System.Web.Extensions
+    $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $serializer.MaxJsonLength = [int]::MaxValue
+    $serializer.RecursionLimit = 100
+    return $serializer
+}
+
+function Read-JsonMapFile {
+    param([string]$Path)
+
+    $serializer = New-JsonSerializer
+    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    return $serializer.DeserializeObject($raw)
+}
+
+function Write-JsonMapFile {
+    param(
+        [string]$Path,
+        $Value
+    )
+
+    $serializer = New-JsonSerializer
+    $json = $serializer.Serialize($Value)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+}
+
+function Test-MapHasKey {
+    param(
+        $Map,
+        [string]$Key
+    )
+
+    if ($null -eq $Map) {
+        return $false
+    }
+
+    if ($Map -is [System.Collections.IDictionary]) {
+        return $Map.Contains($Key)
+    }
+
+    return ($Map.PSObject.Properties.Name -contains $Key)
+}
+
+function Get-MapValue {
+    param(
+        $Map,
+        [string]$Key
+    )
+
+    if ($Map -is [System.Collections.IDictionary]) {
+        return $Map[$Key]
+    }
+
+    return $Map.$Key
+}
+
+function Set-MapValue {
+    param(
+        $Map,
+        [string]$Key,
+        $Value
+    )
+
+    if ($Map -is [System.Collections.IDictionary]) {
+        $Map[$Key] = $Value
+        return
+    }
+
+    $property = $Map.PSObject.Properties[$Key]
+    if ($property) {
+        $property.Value = $Value
+    } else {
+        $Map | Add-Member -MemberType NoteProperty -Name $Key -Value $Value
+    }
+}
+
+function Save-CodexUiStateSnapshot {
+    param([switch]$NoWrite)
+
+    if (-not (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf)) {
+        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+        return $false
+    }
+
+    if ($NoWrite) {
+        Write-Info "NoLaunch: 将会保存 Codex 界面偏好快照：$Script:CodexUiStateSnapshotPath"
+        return $true
+    }
+
+    try {
+        $state = Read-JsonMapFile -Path $Script:CodexGlobalStatePath
+        $snapshot = @{}
+
+        foreach ($key in $Script:CodexUiStateTopLevelKeys) {
+            if (Test-MapHasKey -Map $state -Key $key) {
+                $snapshot[$key] = Get-MapValue -Map $state -Key $key
+            }
+        }
+
+        if (Test-MapHasKey -Map $state -Key 'electron-persisted-atom-state') {
+            $atoms = Get-MapValue -Map $state -Key 'electron-persisted-atom-state'
+            $atomSnapshot = @{}
+            foreach ($key in $Script:CodexUiStateAtomKeys) {
+                if (Test-MapHasKey -Map $atoms -Key $key) {
+                    $atomSnapshot[$key] = Get-MapValue -Map $atoms -Key $key
+                }
+            }
+            if ($atomSnapshot.Count -gt 0) {
+                $snapshot['electron-persisted-atom-state'] = $atomSnapshot
+            }
+        }
+
+        Ensure-Directory -Path $Script:LauncherStateDir
+        Write-JsonMapFile -Path $Script:CodexUiStateSnapshotPath -Value $snapshot
+        Write-Info '已保存 Codex 界面偏好快照。'
+        return $true
+    } catch {
+        Write-Warn "保存 Codex 界面偏好快照失败：$($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Restore-CodexUiStateSnapshot {
+    param([switch]$NoWrite)
+
+    if ($NoWrite) {
+        Write-Info 'NoLaunch: 将会恢复 Codex 界面偏好快照。'
+        return $true
+    }
+
+    if (-not (Test-Path -LiteralPath $Script:CodexUiStateSnapshotPath -PathType Leaf)) {
+        Write-Warn "未找到 Codex 界面偏好快照：$Script:CodexUiStateSnapshotPath"
+        return $false
+    }
+
+    if (-not (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf)) {
+        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+        return $false
+    }
+
+    try {
+        $state = Read-JsonMapFile -Path $Script:CodexGlobalStatePath
+        $snapshot = Read-JsonMapFile -Path $Script:CodexUiStateSnapshotPath
+
+        Backup-LauncherFile -Path $Script:CodexGlobalStatePath -Reason 'before-ui-state-restore' | Out-Null
+
+        foreach ($key in $Script:CodexUiStateTopLevelKeys) {
+            if (Test-MapHasKey -Map $snapshot -Key $key) {
+                Set-MapValue -Map $state -Key $key -Value (Get-MapValue -Map $snapshot -Key $key)
+            }
+        }
+
+        if (Test-MapHasKey -Map $snapshot -Key 'electron-persisted-atom-state') {
+            $atomSnapshot = Get-MapValue -Map $snapshot -Key 'electron-persisted-atom-state'
+            if (Test-MapHasKey -Map $state -Key 'electron-persisted-atom-state') {
+                $atoms = Get-MapValue -Map $state -Key 'electron-persisted-atom-state'
+            } else {
+                $atoms = @{}
+                Set-MapValue -Map $state -Key 'electron-persisted-atom-state' -Value $atoms
+            }
+
+            foreach ($key in $Script:CodexUiStateAtomKeys) {
+                if (Test-MapHasKey -Map $atomSnapshot -Key $key) {
+                    Set-MapValue -Map $atoms -Key $key -Value (Get-MapValue -Map $atomSnapshot -Key $key)
+                }
+            }
+        }
+
+        Write-JsonMapFile -Path $Script:CodexGlobalStatePath -Value $state
+        Write-Ok '已恢复 Codex 界面偏好。'
+        return $true
+    } catch {
+        Write-Warn "恢复 Codex 界面偏好失败：$($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Get-CCSwitchCodexEnhancementState {
     if (-not (Test-Path -LiteralPath $Script:CCSwitchSettingsPath -PathType Leaf)) {
         return 'missing'
@@ -1490,6 +1703,18 @@ function Invoke-Doctor {
         Write-Warn "默认 .codex 目录不存在：$Script:DefaultCodexHome"
     }
 
+    if (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf) {
+        Write-Ok 'Codex 界面状态文件存在；启动器会在切换时保护工作模式等本地偏好。'
+    } else {
+        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+    }
+
+    if (Test-Path -LiteralPath $Script:CodexUiStateSnapshotPath -PathType Leaf) {
+        Write-Ok "Codex 界面偏好快照存在：$Script:CodexUiStateSnapshotPath"
+    } else {
+        Write-Warn '尚未生成 Codex 界面偏好快照；下次通过菜单 1/2/3 切换时会自动生成。'
+    }
+
     $authState = Get-AuthState -Path $Script:ActiveAuthPath
     switch ($authState) {
         'official-like' { Write-Ok '默认 auth.json 看起来是官方 ChatGPT/OAuth 登录态。' }
@@ -1624,6 +1849,7 @@ function Start-OfficialMode {
 
     Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
     Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch | Out-Null
+    Save-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Set-CCSwitchCodexEnhancement -Enabled $false -NoWrite:$NoLaunch | Out-Null
 
     if (Restore-OfficialProfile -NoWrite:$NoLaunch) {
@@ -1634,6 +1860,7 @@ function Start-OfficialMode {
         Disable-ApiKeyAuthForOfficial -NoWrite:$NoLaunch
     }
 
+    Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv $Script:ThirdPartyEnvVars -NoLaunch:$NoLaunch
 }
 
@@ -1785,6 +2012,7 @@ function Start-ThirdPartyPreserveAuthMode {
         return
     }
 
+    Save-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
     if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
@@ -1818,6 +2046,7 @@ function Start-ThirdPartyPreserveAuthMode {
         return
     }
 
+    Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
 }
 
@@ -1846,6 +2075,7 @@ function Start-ThirdPartyPureMode {
         return
     }
 
+    Save-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyPureProfile -NoWrite:$NoLaunch | Out-Null
 
@@ -1865,6 +2095,7 @@ function Start-ThirdPartyPureMode {
         return
     }
 
+    Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
 }
 
