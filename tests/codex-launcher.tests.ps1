@@ -162,7 +162,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-DoesNotContainText $script:Launcher "'saveofficial'"
         Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
         Assert-ContainsText $script:Launcher 'Invoke-Doctor'
-        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.1'''
+        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.2'''
         Assert-ContainsText $script:Launcher 'Codex Windows 启动器 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher 'Codex Windows Launcher 诊断 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
@@ -273,6 +273,58 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $pureEnhanceConfirmIndex = $pureBody.IndexOf('Confirm-CCSwitchCodexEnhancement -ExpectedEnabled $false')
         if ($purePrepIndex -lt 0 -or $pureRestoreIndex -lt 0 -or $pureDisableIndex -lt 0 -or $pureRestartIndex -lt 0 -or $pureEnhanceConfirmIndex -lt 0 -or $pureConfirmIndex -lt 0 -or $purePrepIndex -gt $pureRestoreIndex -or $pureRestoreIndex -gt $pureDisableIndex -or $pureDisableIndex -gt $pureRestartIndex -or $pureRestartIndex -gt $pureEnhanceConfirmIndex -or $pureEnhanceConfirmIndex -gt $pureConfirmIndex) {
             throw 'Pure third-party mode must close Codex/CCSwitch, restore config/auth, disable CCSwitch Codex enhancement, restart CCSwitch, then confirm enhancement and route config.'
+        }
+    }
+
+    It 'preserves safe Codex UI preferences across mode switches' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping Codex UI preference preservation check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher '\.codex-global-state\.json'
+        Assert-ContainsText $script:Launcher 'codex-ui-state\.json'
+        Assert-ContainsText $script:Launcher 'Save-CodexUiStateSnapshot'
+        Assert-ContainsText $script:Launcher 'Restore-CodexUiStateSnapshot'
+        Assert-ContainsText $script:Launcher 'agent-mode-by-host-id'
+        Assert-ContainsText $script:Launcher 'composer-auto-context-enabled'
+        Assert-ContainsText $script:Launcher 'sidebar-width'
+        Assert-ContainsText $script:Launcher 'skip-full-access-confirm'
+        Assert-ContainsText $script:Launcher 'Codex 界面偏好快照'
+        Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*prompt-history"
+        Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*auth"
+        Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*token"
+
+        $officialStart = $script:Launcher.IndexOf('function Start-OfficialMode')
+        $ensureStart = $script:Launcher.IndexOf('function Ensure-CCSwitchRunning')
+        $officialBody = $script:Launcher.Substring($officialStart, $ensureStart - $officialStart)
+        $officialSaveIndex = $officialBody.IndexOf('Save-CodexUiStateSnapshot')
+        $officialRestoreProfileIndex = $officialBody.IndexOf('Restore-OfficialProfile')
+        $officialRestoreUiIndex = $officialBody.IndexOf('Restore-CodexUiStateSnapshot')
+        $officialLaunchIndex = $officialBody.IndexOf('Start-LaunchTarget')
+        if ($officialSaveIndex -lt 0 -or $officialRestoreProfileIndex -lt 0 -or $officialRestoreUiIndex -lt 0 -or $officialLaunchIndex -lt 0 -or $officialSaveIndex -gt $officialRestoreProfileIndex -or $officialRestoreProfileIndex -gt $officialRestoreUiIndex -or $officialRestoreUiIndex -gt $officialLaunchIndex) {
+            throw 'Official mode must save UI preferences, restore profile, restore UI preferences, then launch Codex.'
+        }
+
+        $preserveStart = $script:Launcher.IndexOf('function Start-ThirdPartyPreserveAuthMode')
+        $pureStart = $script:Launcher.IndexOf('function Start-ThirdPartyPureMode')
+        $preserveBody = $script:Launcher.Substring($preserveStart, $pureStart - $preserveStart)
+        $preserveSaveIndex = $preserveBody.IndexOf('Save-CodexUiStateSnapshot')
+        $preserveRestoreConfigIndex = $preserveBody.IndexOf('Restore-ThirdPartyConfig')
+        $preserveRestoreUiIndex = $preserveBody.IndexOf('Restore-CodexUiStateSnapshot')
+        $preserveLaunchIndex = $preserveBody.IndexOf('Start-LaunchTarget')
+        if ($preserveSaveIndex -lt 0 -or $preserveRestoreConfigIndex -lt 0 -or $preserveRestoreUiIndex -lt 0 -or $preserveLaunchIndex -lt 0 -or $preserveSaveIndex -gt $preserveRestoreConfigIndex -or $preserveRestoreConfigIndex -gt $preserveRestoreUiIndex -or $preserveRestoreUiIndex -gt $preserveLaunchIndex) {
+            throw 'Preserve-auth mode must save UI preferences before switching and restore them before launch.'
+        }
+
+        $pureEnd = $script:Launcher.IndexOf('function Start-ThirdPartyMode')
+        $pureBody = $script:Launcher.Substring($pureStart, $pureEnd - $pureStart)
+        $pureSaveIndex = $pureBody.IndexOf('Save-CodexUiStateSnapshot')
+        $pureRestoreProfileIndex = $pureBody.IndexOf('Restore-ThirdPartyPureProfile')
+        $pureRestoreUiIndex = $pureBody.IndexOf('Restore-CodexUiStateSnapshot')
+        $pureLaunchIndex = $pureBody.IndexOf('Start-LaunchTarget')
+        if ($pureSaveIndex -lt 0 -or $pureRestoreProfileIndex -lt 0 -or $pureRestoreUiIndex -lt 0 -or $pureLaunchIndex -lt 0 -or $pureSaveIndex -gt $pureRestoreProfileIndex -or $pureRestoreProfileIndex -gt $pureRestoreUiIndex -or $pureRestoreUiIndex -gt $pureLaunchIndex) {
+            throw 'Pure third-party mode must save UI preferences before switching and restore them before launch.'
         }
     }
 
