@@ -1,6 +1,6 @@
 ﻿# Codex Windows 启动器
 
-当前版本：`v0.4.1`
+当前版本：`v0.4.2`
 
 一个 Windows PowerShell 启动器，用来在 Codex Desktop 的官方登录态和第三方路由状态之间切换：
 
@@ -17,8 +17,11 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 - `%USERPROFILE%\.codex-launcher\profiles\official`：官方登录态和非 custom 配置。
 - `%USERPROFILE%\.codex-launcher\profiles\thirdparty`：CCSwitch/custom 配置；纯第三方模式也可使用其中的 API-key 风格登录态。
 - `%USERPROFILE%\.codex-launcher\backup`：切换前的本地备份。
+- `%USERPROFILE%\.codex-launcher\state\codex-ui-state.json`：切换前后保护的 Codex 界面偏好快照。
 
 启动器只在本机复制、恢复、备份这些 profile 文件，不打印、不上传、不转换 `auth.json` 或 token 内容。
+
+从 `v0.4.2` 开始，启动器会额外保护 Codex Desktop 的本地界面偏好，例如工作模式、窗口位置、侧边栏状态、已看过的提示等。它不会保存 `prompt-history`、线程正文、cookie、token 或 `auth.json` 内容。个性化如果由 Codex 官方账号云端保存，启动器只能避免本地状态被覆盖，不能强行改写云端账号设置。
 
 启动 Codex Desktop 时，启动器会优先寻找真实桌面程序，而不是直接依赖 Windows AppId：
 
@@ -68,10 +71,12 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 
 1. 关闭 CCSwitch。
 2. 关闭旧的 Codex Desktop 进程。
-3. 如果已经保存过官方 profile，恢复它并启动 Codex。
-4. 如果没有官方 profile，清理默认 `.codex` 中的 custom provider 配置，并暂时移走 API-key 风格的 `auth.json`。
-5. 启动 Codex Desktop，让用户正常网页登录。
-6. 官方登录态会在后续安全切换时自动保存；不会把第三方/API-key 状态误保存为官方状态。
+3. 保存 Codex 界面偏好快照。
+4. 如果已经保存过官方 profile，恢复它并启动 Codex。
+5. 如果没有官方 profile，清理默认 `.codex` 中的 custom provider 配置，并暂时移走 API-key 风格的 `auth.json`。
+6. 恢复 Codex 界面偏好。
+7. 启动 Codex Desktop，让用户正常网页登录。
+8. 官方登录态会在后续安全切换时自动保存；不会把第三方/API-key 状态误保存为官方状态。
 
 保存过官方状态后，再选菜单 `1` 应该复用本地官方登录态，不应每次都跳网页登录。
 
@@ -82,13 +87,15 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 行为：
 
 1. 关闭旧的 Codex Desktop。
-2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方登录文件。
-3. 只恢复已保存的第三方 `config.toml`。
-4. 保留当前官方 `auth.json`；如果当前不是官方登录态，则尝试从 official profile 只恢复 `auth.json`。
-5. 开启 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=true`。
-6. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已开启。
-7. 再次恢复并确认官方 `auth.json`，防止 CCSwitch 重启接管后把最终状态改回 API-key。
-8. 启动 Codex Desktop。
+2. 保存 Codex 界面偏好快照。
+3. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方登录文件。
+4. 只恢复已保存的第三方 `config.toml`。
+5. 保留当前官方 `auth.json`；如果当前不是官方登录态，则尝试从 official profile 只恢复 `auth.json`。
+6. 开启 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=true`。
+7. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已开启。
+8. 再次恢复并确认官方 `auth.json`，防止 CCSwitch 重启接管后把最终状态改回 API-key。
+9. 恢复 Codex 界面偏好。
+10. 启动 Codex Desktop。
 
 菜单 `2` 不会恢复第三方 `auth.json`，因此不会用第三方登录文件覆盖官方登录文件。
 
@@ -101,11 +108,13 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 行为：
 
 1. 关闭旧的 Codex Desktop。
-2. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方状态。
-3. 恢复第三方 `config.toml` 和第三方 `auth.json`。
-4. 关闭 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=false`。
-5. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已关闭。
-6. 启动 Codex Desktop。
+2. 保存 Codex 界面偏好快照。
+3. 如果当前默认 `.codex` 看起来是官方态，自动安全保存官方状态。
+4. 恢复第三方 `config.toml` 和第三方 `auth.json`。
+5. 关闭 CCSwitch 的 Codex 应用增强：`preserveCodexOfficialAuthOnSwitch=false`。
+6. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已关闭。
+7. 恢复 Codex 界面偏好。
+8. 启动 Codex Desktop。
 
 菜单 `3` 不会覆盖已保存的 official profile。之后仍可通过菜单 `1` 回到官方模式。
 
@@ -119,6 +128,7 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 - CCSwitch 是否安装和运行。
 - `127.0.0.1:15721` 是否监听。
 - 当前 `.codex` 是官方态、API-key 态、未知态还是不存在。
+- Codex 界面状态文件和界面偏好快照是否存在。
 - official profile、第三方路由配置、纯第三方/API-key 状态是否完整。
 - 桌面快捷方式是否指向当前启动器脚本。
 - 旧 `Start Codex With CC Switch` 快捷方式是否仍存在。
