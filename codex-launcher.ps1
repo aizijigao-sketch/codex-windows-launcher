@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet('official', 'thirdparty', 'thirdparty-preserve-auth', 'thirdparty-pure', 'check', 'doctor', 'bootstrap', 'menu')]
     [string]$Mode = 'menu',
 
@@ -73,6 +73,21 @@ $Script:CodexUiStateAtomKeys = @(
     'electron:onboarding-projectless-completed',
     'electron:onboarding-welcome-pending'
 )
+$Script:ConfigPreserveSectionPrefixes = @(
+    'marketplaces',
+    'marketplaces.',
+    'plugins.',
+    'mcp_servers',
+    'mcp_servers.',
+    'windows',
+    'features',
+    'projects.',
+    'desktop'
+)
+$Script:ConfigPreserveTopLevelKeys = @(
+    'notify',
+    'disable_response_storage'
+)
 
 function Write-Info {
     param([string]$Message)
@@ -110,6 +125,7 @@ function New-DefaultLauncherConfig {
     $defaults = New-Object PSObject -Property @{
         codexPath = ''
         ccswitchPath = ''
+        historySyncBackendPath = ''
     }
 
     return $defaults
@@ -128,7 +144,7 @@ function Read-LauncherConfig {
             return $defaults
         }
         $config = $raw | ConvertFrom-Json
-        foreach ($name in @('codexPath', 'ccswitchPath')) {
+        foreach ($name in @('codexPath', 'ccswitchPath', 'historySyncBackendPath')) {
             if (-not ($config.PSObject.Properties.Name -contains $name)) {
                 Add-Member -InputObject $config -NotePropertyName $name -NotePropertyValue ''
             }
@@ -151,7 +167,7 @@ function Write-LauncherConfigIfMissing {
     )
 
     if (Test-Path -LiteralPath $Script:ConfigPath -PathType Leaf) {
-        Write-Ok "配置文件已存在：$Script:ConfigPath"
+        Write-Ok "????????$Script:ConfigPath"
         return
     }
 
@@ -167,9 +183,9 @@ function Write-LauncherConfigIfMissing {
     }
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会创建非敏感配置文件：$Script:ConfigPath"
+        Write-Info "NoLaunch: ????????????$Script:ConfigPath"
         if ($codexPath) {
-            Write-Info "NoLaunch: 将会写入 codexPath=$codexPath"
+            Write-Info "NoLaunch: ???? codexPath=$codexPath"
         }
         return
     }
@@ -178,14 +194,16 @@ function Write-LauncherConfigIfMissing {
     $json = @{
         codexPath = $codexPath
         ccswitchPath = $ccswitchPath
+        historySyncBackendPath = ''
         notes = @(
             'This file is machine-local and must not contain secrets.',
             'Set codexPath or ccswitchPath only when auto-discovery fails.',
+            'historySyncBackendPath is optional; when empty the launcher looks for the sibling codex-history-sync-windows-work project.',
             'Do not place API keys, tokens, passwords, cookies, provider secrets, or auth.json contents here.'
         )
     } | ConvertTo-Json -Depth 4
     Set-Content -LiteralPath $Script:ConfigPath -Value $json -Encoding UTF8
-    Write-Ok "已创建非敏感配置文件：$Script:ConfigPath"
+    Write-Ok "???????????$Script:ConfigPath"
 }
 
 function Test-ExecutablePath {
@@ -366,13 +384,13 @@ function Backup-ShortcutMetadata {
     }
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会备份快捷方式元数据到 $backupPath"
+        Write-Info "NoLaunch: ???????????? $backupPath"
         return
     }
 
     Ensure-Directory -Path $Script:BackupDir
     Set-Content -LiteralPath $backupPath -Value $lines.ToArray() -Encoding UTF8
-    Write-Ok "已备份快捷方式元数据：$backupPath"
+    Write-Ok "???????????$backupPath"
 }
 
 function New-LauncherShortcut {
@@ -389,7 +407,7 @@ function New-LauncherShortcut {
     Backup-ShortcutMetadata -ShortcutPaths $existing -Reason 'before-bootstrap-shortcut' -NoWrite:$NoWrite
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会创建或更新桌面快捷方式：$shortcutPath"
+        Write-Info "NoLaunch: ??????????????$shortcutPath"
         return
     }
 
@@ -407,7 +425,7 @@ function New-LauncherShortcut {
     }
 
     $shortcut.Save()
-    Write-Ok "已创建或更新桌面快捷方式：$shortcutPath"
+    Write-Ok "?????????????$shortcutPath"
 }
 
 function Test-LocalPort {
@@ -703,7 +721,12 @@ function Stop-LauncherProcess {
             if (-not $liveProcess) {
                 continue
             }
-            Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+            if ($liveProcess.MainWindowHandle -ne 0) {
+                Write-Info "?????? $DisplayName ?? $($proc.ProcessId)??????????"
+                [void]$liveProcess.CloseMainWindow()
+            } else {
+                Write-Info "$DisplayName ?? $($proc.ProcessId) ?????????????????"
+            }
         } catch {
             Write-Warn "Could not close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
         }
@@ -718,7 +741,29 @@ function Stop-LauncherProcess {
     }
 
     if (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames) {
-        Write-Warn "$DisplayName 仍在运行，配置切换可能不会立即生效。请手动关闭后重试。"
+        Write-Warn "$DisplayName ??? $TimeoutSeconds ??????????????"
+        foreach ($proc in $matches) {
+            try {
+                $liveProcess = Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue
+                if ($liveProcess) {
+                    Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+                }
+            } catch {
+                Write-Warn "Could not force close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    $forceDeadline = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $forceDeadline) {
+        if (-not (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames) {
+        Write-Warn "$DisplayName ???????????????????????????"
         return $false
     }
 
@@ -776,9 +821,9 @@ function Start-AppIdTarget {
     $errors = New-Object System.Collections.Generic.List[string]
 
     if (Test-IsElevated) {
-        Write-ErrorLine '当前是管理员窗口，无法可靠通过 Windows AppId 启动 Codex。'
-        Write-Next '请关闭这个窗口，直接双击桌面的 Codex Windows Launcher，或打开普通 PowerShell 再运行。'
-        Write-Next '如果普通窗口仍失败，请运行 doctor；启动目标若仍是 AppId，需要在 launcher-config.json 设置真实 Codex Desktop 的 codexPath。'
+        Write-ErrorLine '??????????????? Windows AppId ?? Codex?'
+        Write-Next '??????????????? Codex Windows Launcher?????? PowerShell ????'
+        Write-Next '????????????? doctor???????? AppId???? launcher-config.json ???? Codex Desktop ? codexPath?'
         return
     }
 
@@ -804,16 +849,16 @@ function Start-AppIdTarget {
         $errors.Add("cmd start: $($_.Exception.Message)")
     }
 
-    Write-ErrorLine '无法通过 Windows AppId 启动 Codex。'
+    Write-ErrorLine '???? Windows AppId ?? Codex?'
     foreach ($message in $errors) {
         Write-Warn $message
     }
     if (Test-IsElevated) {
-        Write-Next '当前窗口是管理员模式。请关闭它，直接双击桌面的 Codex Windows Launcher，或用普通 PowerShell 运行。'
+        Write-Next '??????????????????????? Codex Windows Launcher????? PowerShell ???'
     } else {
-        Write-Next "请尝试从开始菜单直接启动 Codex，或在 $Script:ConfigPath 里设置 codexPath。"
+        Write-Next "???????????? Codex??? $Script:ConfigPath ??? codexPath?"
     }
-    Write-Next '也可以运行 doctor 查看当前是 Exe 还是 AppId 启动目标。v0.3 会优先使用真实 Codex.exe。'
+    Write-Next '????? doctor ????? Exe ?? AppId ?????v0.3 ??????? Codex.exe?'
 }
 
 function Start-LaunchTarget {
@@ -848,6 +893,70 @@ function Start-LaunchTarget {
         }
     } finally {
         Restore-ProcessEnv -Snapshot $snapshot
+    }
+}
+
+function Resolve-HistorySyncBackendPath {
+    param($Config)
+
+    if ($Config -and -not [string]::IsNullOrWhiteSpace($Config.historySyncBackendPath)) {
+        $configured = [Environment]::ExpandEnvironmentVariables($Config.historySyncBackendPath)
+        if (Test-Path -LiteralPath $configured -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $configured).ProviderPath
+        }
+        Write-Warn "???? historySyncBackendPath ????$configured"
+    }
+
+    $launcherDir = Split-Path -Parent $PSCommandPath
+    $projectsDir = Split-Path -Parent $launcherDir
+    $sibling = Join-Path $projectsDir 'codex-history-sync-windows-work\sync_backend.py'
+    if (Test-Path -LiteralPath $sibling -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $sibling).ProviderPath
+    }
+
+    return $null
+}
+
+function Invoke-HistorySyncBeforeCodexLaunch {
+    param(
+        $Config,
+        [string]$Reason,
+        [switch]$NoLaunch
+    )
+
+    $backendPath = Resolve-HistorySyncBackendPath -Config $Config
+    if (-not $backendPath) {
+        Write-Warn '??? Codex History Sync Tool ???????? Codex???????????'
+        Write-Next '??????? launcher-config.json ?? historySyncBackendPath???????????? 20_Projects ????'
+        return $false
+    }
+
+    if ($NoLaunch) {
+        Write-Info "NoLaunch: ????? Codex ????????py -3 $backendPath --json sync"
+        return $true
+    }
+
+    Write-Info "?? Codex ????????$Reason"
+    try {
+        $completed = & py -3 $backendPath --json sync 2>&1
+        $raw = ($completed | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Warn '????????????????? Codex?'
+            return $false
+        }
+        $payload = $raw | ConvertFrom-Json
+        if ($payload.ok -ne $true) {
+            Write-Warn "????????$($payload.error)"
+            Write-Next '?????????????? Codex History Sync Tool ??????/????'
+            return $false
+        }
+        $status = $payload.status
+        Write-Ok "?????????=$($payload.sync_rounds)??????=$($status.movable_threads)???=$($payload.backup_path)"
+        return $true
+    } catch {
+        Write-Warn "?????????$($_.Exception.Message)"
+        Write-Next '????????????????? Codex???????????? Codex History Sync Tool?'
+        return $false
     }
 }
 
@@ -895,13 +1004,13 @@ function Backup-CCSwitchSettingsFile {
     $backupPath = Join-Path $Script:CCSwitchBackupDir "settings.json.$timestamp.before-codex-enhancement.bak"
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会备份 CCSwitch 设置到本机目录：$backupPath"
+        Write-Info "NoLaunch: ???? CCSwitch ????????$backupPath"
         return $backupPath
     }
 
     Ensure-Directory -Path $Script:CCSwitchBackupDir
     Copy-Item -LiteralPath $Script:CCSwitchSettingsPath -Destination $backupPath -Force
-    Write-Info '已备份 CCSwitch 设置文件到本机 .cc-switch\backups。'
+    Write-Info '??? CCSwitch ??????? .cc-switch\backups?'
     return $backupPath
 }
 
@@ -987,12 +1096,12 @@ function Save-CodexUiStateSnapshot {
     param([switch]$NoWrite)
 
     if (-not (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf)) {
-        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+        Write-Warn "??? Codex ???????$Script:CodexGlobalStatePath"
         return $false
     }
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会保存 Codex 界面偏好快照：$Script:CodexUiStateSnapshotPath"
+        Write-Info "NoLaunch: ???? Codex ???????$Script:CodexUiStateSnapshotPath"
         return $true
     }
 
@@ -1021,10 +1130,10 @@ function Save-CodexUiStateSnapshot {
 
         Ensure-Directory -Path $Script:LauncherStateDir
         Write-JsonMapFile -Path $Script:CodexUiStateSnapshotPath -Value $snapshot
-        Write-Info '已保存 Codex 界面偏好快照。'
+        Write-Info '??? Codex ???????'
         return $true
     } catch {
-        Write-Warn "保存 Codex 界面偏好快照失败：$($_.Exception.Message)"
+        Write-Warn "?? Codex ?????????$($_.Exception.Message)"
         return $false
     }
 }
@@ -1033,17 +1142,17 @@ function Restore-CodexUiStateSnapshot {
     param([switch]$NoWrite)
 
     if ($NoWrite) {
-        Write-Info 'NoLaunch: 将会恢复 Codex 界面偏好快照。'
+        Write-Info 'NoLaunch: ???? Codex ???????'
         return $true
     }
 
     if (-not (Test-Path -LiteralPath $Script:CodexUiStateSnapshotPath -PathType Leaf)) {
-        Write-Warn "未找到 Codex 界面偏好快照：$Script:CodexUiStateSnapshotPath"
+        Write-Warn "??? Codex ???????$Script:CodexUiStateSnapshotPath"
         return $false
     }
 
     if (-not (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf)) {
-        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+        Write-Warn "??? Codex ???????$Script:CodexGlobalStatePath"
         return $false
     }
 
@@ -1076,10 +1185,10 @@ function Restore-CodexUiStateSnapshot {
         }
 
         Write-JsonMapFile -Path $Script:CodexGlobalStatePath -Value $state
-        Write-Ok '已恢复 Codex 界面偏好。'
+        Write-Ok '??? Codex ?????'
         return $true
     } catch {
-        Write-Warn "恢复 Codex 界面偏好失败：$($_.Exception.Message)"
+        Write-Warn "?? Codex ???????$($_.Exception.Message)"
         return $false
     }
 }
@@ -1114,22 +1223,22 @@ function Set-CCSwitchCodexEnhancement {
         [switch]$NoWrite
     )
 
-    $stateText = if ($Enabled) { '开启' } else { '关闭' }
+    $stateText = if ($Enabled) { '??' } else { '??' }
     if (-not (Test-Path -LiteralPath $Script:CCSwitchSettingsPath -PathType Leaf)) {
-        Write-Warn "未找到 CCSwitch 设置文件：$Script:CCSwitchSettingsPath"
-        Write-Next "请先打开一次 CCSwitch；本次仍会继续启动，但无法自动${stateText} Codex 应用增强。"
+        Write-Warn "??? CCSwitch ?????$Script:CCSwitchSettingsPath"
+        Write-Next "?????? CCSwitch???????????????${stateText} Codex ?????"
         return $false
     }
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会${stateText} CCSwitch Codex 应用增强：preserveCodexOfficialAuthOnSwitch=$Enabled"
+        Write-Info "NoLaunch: ??${stateText} CCSwitch Codex ?????preserveCodexOfficialAuthOnSwitch=$Enabled"
         return $true
     }
 
     try {
         $raw = Get-Content -LiteralPath $Script:CCSwitchSettingsPath -Raw -Encoding UTF8
         if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Warn 'CCSwitch 设置文件为空，无法自动修改 Codex 应用增强。'
+            Write-Warn 'CCSwitch ????????????? Codex ?????'
             return $false
         }
 
@@ -1146,11 +1255,11 @@ function Set-CCSwitchCodexEnhancement {
         $json = $settings | ConvertTo-Json -Depth 100
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($Script:CCSwitchSettingsPath, $json, $utf8NoBom)
-        Write-Ok "已${stateText} CCSwitch Codex 应用增强。"
+        Write-Ok "?${stateText} CCSwitch Codex ?????"
         return $true
     } catch {
-        Write-Warn "修改 CCSwitch Codex 应用增强失败：$($_.Exception.Message)"
-        Write-Next '本次不会打印 CCSwitch settings.json 内容；请避免把该文件上传到公有仓库。'
+        Write-Warn "?? CCSwitch Codex ???????$($_.Exception.Message)"
+        Write-Next '?????? CCSwitch settings.json ??????????????????'
         return $false
     }
 }
@@ -1246,7 +1355,7 @@ function Save-OfficialProfile {
     param([switch]$NoWrite)
     $saved = Save-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -NoWrite:$NoWrite
     if (-not $saved) {
-        Write-Warn '没有找到可保存的默认 Codex 配置文件，无法保存官方状态。'
+        Write-Warn '?????????? Codex ??????????????'
     }
 }
 
@@ -1260,7 +1369,7 @@ function Restore-OfficialAuthOnly {
 
     $restored = Restore-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -Files @('auth.json') -NoWrite:$NoWrite
     if (-not $restored) {
-        Write-Warn '没有找到已保存的官方登录文件；保留官方登录的第三方模式可能需要先完成一次官方登录。'
+        Write-Warn '?????????????????????????????????????????'
     }
     return $restored
 }
@@ -1270,7 +1379,7 @@ function Restore-ThirdPartyProfile {
 
     $restored = Restore-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -NoWrite:$NoWrite
     if (-not $restored) {
-        Write-Warn '没有找到已保存的第三方状态；第三方模式会沿用当前默认 .codex 状态。'
+        Write-Warn '?????????????????????????? .codex ???'
     }
 }
 
@@ -1279,9 +1388,171 @@ function Restore-ThirdPartyConfig {
 
     $restored = Restore-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml') -NoWrite:$NoWrite
     if (-not $restored) {
-        Write-Warn '没有找到已保存的第三方路由配置；会沿用当前默认 config.toml。'
+        Write-Warn '??????????????????????? config.toml?'
     }
     return $restored
+}
+
+function Get-ConfigSectionName {
+    param([string]$Line)
+
+    if ($Line -match '^\s*\[([^\]]+)\]\s*$') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+function Test-PreservedConfigSection {
+    param([string]$Section)
+
+    if ([string]::IsNullOrWhiteSpace($Section)) {
+        return $false
+    }
+    foreach ($prefix in $Script:ConfigPreserveSectionPrefixes) {
+        if ($Section -eq $prefix -or $Section.StartsWith($prefix)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-PreservedTopLevelConfigLine {
+    param([string]$Line)
+
+    foreach ($key in $Script:ConfigPreserveTopLevelKeys) {
+        if ($Line -match "^\s*$([regex]::Escape($key))\s*=") {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Read-ConfigLines {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+    return @(Get-Content -LiteralPath $Path -Encoding UTF8)
+}
+
+function Get-ConfigPreservationBaseline {
+    $activeLines = Read-ConfigLines -Path $Script:ActiveConfigPath
+    $activeText = $activeLines -join "`n"
+    if ($activeLines.Count -gt 0 -and -not (Test-ActiveConfigLooksCustom)) {
+        Write-Info '???????? config.toml ??????????????'
+        return $activeLines
+    }
+
+    $officialConfigPath = Join-Path $Script:OfficialProfileDir 'config.toml'
+    $officialLines = Read-ConfigLines -Path $officialConfigPath
+    if ($officialLines.Count -gt 0) {
+        Write-Info '?????? official profile config.toml ??????????????'
+        return $officialLines
+    }
+
+    if ($activeLines.Count -gt 0) {
+        Write-Warn '???????? config ????????? config ??????????'
+        return $activeLines
+    }
+
+    Write-Warn '????????????? config.toml ???'
+    return @()
+}
+
+function Select-PreservedConfigLines {
+    param([string[]]$Lines)
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $section = ''
+    foreach ($line in $Lines) {
+        $newSection = Get-ConfigSectionName -Line $line
+        if ($null -ne $newSection) {
+            $section = $newSection
+        }
+
+        if ([string]::IsNullOrWhiteSpace($section)) {
+            if (Test-PreservedTopLevelConfigLine -Line $line) {
+                $result.Add($line)
+            }
+            continue
+        }
+
+        if (Test-PreservedConfigSection -Section $section) {
+            $result.Add($line)
+        }
+    }
+    return @($result)
+}
+
+function Select-RouteConfigLines {
+    param([string[]]$Lines)
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $section = ''
+    foreach ($line in $Lines) {
+        $newSection = Get-ConfigSectionName -Line $line
+        if ($null -ne $newSection) {
+            $section = $newSection
+        }
+
+        if ([string]::IsNullOrWhiteSpace($section)) {
+            if (-not (Test-PreservedTopLevelConfigLine -Line $line)) {
+                $result.Add($line)
+            }
+            continue
+        }
+
+        if (-not (Test-PreservedConfigSection -Section $section)) {
+            $result.Add($line)
+        }
+    }
+    return @($result)
+}
+
+function Merge-PreservedCodexConfigSections {
+    param(
+        [string[]]$BaselineLines,
+        [switch]$NoWrite
+    )
+
+    if ($BaselineLines.Count -eq 0) {
+        Write-Warn '????/??????????? config ???'
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf)) {
+        Write-Warn '?? config.toml ????????/???????'
+        return $false
+    }
+
+    $activeLines = Read-ConfigLines -Path $Script:ActiveConfigPath
+    $routeLines = Select-RouteConfigLines -Lines $activeLines
+    $preservedLines = Select-PreservedConfigLines -Lines $BaselineLines
+    if ($preservedLines.Count -eq 0) {
+        Write-Warn '????????????????marketplace?MCP ??????'
+        return $false
+    }
+
+    $merged = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $routeLines) {
+        $merged.Add($line)
+    }
+    if ($merged.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($merged[$merged.Count - 1])) {
+        $merged.Add('')
+    }
+    foreach ($line in $preservedLines) {
+        $merged.Add($line)
+    }
+
+    if ($NoWrite) {
+        Write-Info 'NoLaunch: ????????????????????marketplace?MCP ??????'
+        return $true
+    }
+
+    Backup-LauncherFile -Path $Script:ActiveConfigPath -Reason 'before-preserve-config-merge' | Out-Null
+    Set-Content -LiteralPath $Script:ActiveConfigPath -Value $merged.ToArray() -Encoding UTF8
+    Write-Ok '????????marketplace?MCP ??????????????????'
+    return $true
 }
 
 function Restore-ThirdPartyPureProfile {
@@ -1289,7 +1560,7 @@ function Restore-ThirdPartyPureProfile {
 
     $restored = Restore-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml', 'auth.json') -NoWrite:$NoWrite
     if (-not $restored) {
-        Write-Warn '没有找到已保存的纯第三方状态；纯第三方模式会沿用当前默认 .codex 状态。'
+        Write-Warn '???????????????????????????? .codex ???'
     }
     return $restored
 }
@@ -1323,7 +1594,7 @@ function Get-AuthState {
         }
         return 'unknown'
     } catch {
-        Write-Warn '无法识别 auth.json 元数据；不会自动移动或保存为官方状态。'
+        Write-Warn '???? auth.json ???????????????????'
         return 'unknown'
     }
 }
@@ -1369,12 +1640,12 @@ function Save-OfficialProfileIfCurrentLooksOfficial {
     param([switch]$NoWrite)
 
     if (Test-CurrentLooksOfficialProfile) {
-        Write-Info '当前默认 .codex 看起来是官方登录态；切换前会先保存为官方状态。'
+        Write-Info '???? .codex ???????????????????????'
         Save-OfficialProfile -NoWrite:$NoWrite
         return $true
     }
 
-    Write-Warn '当前默认 .codex 不像官方登录态；不会保存为官方状态，避免误缓存第三方状态。'
+    Write-Warn '???? .codex ?????????????????????????????'
     return $false
 }
 
@@ -1385,7 +1656,7 @@ function Save-OfficialAuthOnlyIfCurrentLooksOfficial {
         return $false
     }
 
-    Write-Info '当前 auth.json 看起来是官方登录态；会保存官方登录文件。'
+    Write-Info '?? auth.json ????????????????????'
     Save-ProfileFiles -ProfileName 'official' -ProfileDir $Script:OfficialProfileDir -Files @('auth.json') -NoWrite:$NoWrite | Out-Null
     return $true
 }
@@ -1403,7 +1674,7 @@ function Ensure-OfficialAuthForPreserveMode {
         return $true
     }
 
-    Write-Warn '保留官方登录的第三方模式没有找到可确认的官方登录态；不会恢复第三方 auth.json。'
+    Write-Warn '????????????????????????????????? auth.json?'
     return $false
 }
 
@@ -1411,18 +1682,18 @@ function Confirm-OfficialAuthForPreserveMode {
     param([switch]$NoLaunch)
 
     if ($NoLaunch) {
-        Write-Info 'NoLaunch: 将会确认最终 auth.json 仍是官方 ChatGPT/OAuth 登录态。'
+        Write-Info 'NoLaunch: ?????? auth.json ???? ChatGPT/OAuth ????'
         return $true
     }
 
     $authState = Get-AuthState -Path $Script:ActiveAuthPath
     if ($authState -eq 'official-like') {
-        Write-Ok '最终 auth.json 已确认是官方 ChatGPT/OAuth 登录态。'
+        Write-Ok '?? auth.json ?????? ChatGPT/OAuth ????'
         return $true
     }
 
-    Write-ErrorLine "最终 auth.json 不是官方登录态，而是 $authState；本次不会启动 Codex，避免继续显示 API 密钥登录。"
-    Write-Next '请先用菜单 1 完成官方网页登录并保存官方状态，再选择菜单 2。'
+    Write-ErrorLine "?? auth.json ?????????? $authState??????? Codex??????? API ?????"
+    Write-Next '????? 1 ????????????????????? 2?'
     return $false
 }
 
@@ -1432,17 +1703,17 @@ function Disable-ApiKeyAuthForOfficial {
     $authState = Get-AuthState -Path $Script:ActiveAuthPath
 
     if ($authState -eq 'none') {
-        Write-Info '未找到默认 auth.json；Codex 应该会要求官方登录。'
+        Write-Info '????? auth.json?Codex ??????????'
         return
     }
 
     if ($authState -eq 'unknown') {
-        Write-Warn '默认 auth.json 存在但无法安全识别；不会自动移走。请先手动确认登录态。'
+        Write-Warn '?? auth.json ???????????????????????????'
         return
     }
 
     if ($authState -ne 'api-key-like') {
-        Write-Info '默认 auth.json 不像 API-key 登录态；保持不动。'
+        Write-Info '?? auth.json ?? API-key ?????????'
         return
     }
 
@@ -1450,14 +1721,14 @@ function Disable-ApiKeyAuthForOfficial {
     Backup-LauncherFile -Path $Script:ActiveAuthPath -Reason 'before-official-auth-switch' -NoWrite:$NoWrite | Out-Null
 
     if ($NoWrite) {
-        Write-Info 'NoLaunch: 将会暂时移走 API-key auth.json，让 Codex 使用官方登录。'
+        Write-Info 'NoLaunch: ?????? API-key auth.json?? Codex ???????'
         return
     }
 
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $disabledPath = Join-Path $Script:BackupDir ("auth.json.$timestamp.disabled-for-official")
     Move-Item -LiteralPath $Script:ActiveAuthPath -Destination $disabledPath -Force
-    Write-Info '已暂时移走 API-key auth.json。如果没有官方会话，Codex 会要求官方登录。'
+    Write-Info '????? API-key auth.json??????????Codex ????????'
 }
 
 function Repair-ActiveConfigForOfficial {
@@ -1466,7 +1737,7 @@ function Repair-ActiveConfigForOfficial {
     Ensure-Directory -Path $Script:DefaultCodexHome
     if (-not (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf)) {
         if ($NoWrite) {
-            Write-Info "NoLaunch: 将会创建默认官方配置：$Script:ActiveConfigPath"
+            Write-Info "NoLaunch: ???????????$Script:ActiveConfigPath"
             return
         }
         Set-Content -LiteralPath $Script:ActiveConfigPath -Value (New-MinimalOfficialConfig) -Encoding UTF8
@@ -1501,7 +1772,7 @@ function Repair-ActiveConfigForOfficial {
     }
 
     if ($removed -eq 0) {
-        Write-Info '默认 .codex config 未发现 custom provider 配置。'
+        Write-Info '?? .codex config ??? custom provider ???'
         return
     }
 
@@ -1509,12 +1780,12 @@ function Repair-ActiveConfigForOfficial {
     Backup-LauncherFile -Path $Script:ActiveConfigPath -Reason 'before-official-config-switch' -NoWrite:$NoWrite | Out-Null
 
     if ($NoWrite) {
-        Write-Info "NoLaunch: 将会从默认 .codex config 移除 $removed 行 custom provider 配置。"
+        Write-Info "NoLaunch: ????? .codex config ?? $removed ? custom provider ???"
         return
     }
 
     Set-Content -LiteralPath $Script:ActiveConfigPath -Value $kept.ToArray() -Encoding UTF8
-    Write-Info "已从默认 .codex config 移除 $removed 行 custom provider 配置。"
+    Write-Info "???? .codex config ?? $removed ? custom provider ???"
 }
 
 function Test-ProfileComplete {
@@ -1615,44 +1886,44 @@ function Invoke-Doctor {
     param($Config)
 
     Write-Host ''
-    Write-Host "Codex Windows Launcher 诊断 $Script:LauncherVersion"
+    Write-Host "Codex Windows Launcher ?? $Script:LauncherVersion"
     Write-Host '---------------------------'
 
     $state = Detect-ExistingLauncherState
     if ($state.NeedsBootstrap) {
-        Write-Warn "本机启动器状态需要初始化或升级：$($state.StateKind)"
+        Write-Warn "????????????????$($state.StateKind)"
         Write-Next '.\codex-launcher.ps1 -Mode bootstrap'
     } else {
-        Write-Ok "本机启动器状态正常：$($state.StateKind)"
+        Write-Ok "??????????$($state.StateKind)"
     }
 
     if ($state.ConfigExists) {
-        Write-Ok "配置文件存在：$Script:ConfigPath"
+        Write-Ok "???????$Script:ConfigPath"
     } else {
-        Write-Warn "配置文件不存在：$Script:ConfigPath"
+        Write-Warn "????????$Script:ConfigPath"
     }
 
     if ($state.DesktopShortcutExists) {
         if ($state.DesktopShortcutCurrent) {
-            Write-Ok "桌面快捷方式指向当前脚本：$($state.DesktopShortcutPath)"
+            Write-Ok "?????????????$($state.DesktopShortcutPath)"
         } else {
-            Write-Warn "桌面快捷方式不是当前脚本：$($state.DesktopShortcutPath)"
+            Write-Warn "?????????????$($state.DesktopShortcutPath)"
             $info = Get-ShortcutInfo -Path $state.DesktopShortcutPath
             if ($info -and -not [string]::IsNullOrWhiteSpace($info.IconLocation)) {
                 $iconPath = ($info.IconLocation -split ',', 2)[0]
                 if (Test-Path -LiteralPath $iconPath -PathType Leaf) {
-                    Write-Ok "快捷方式图标存在：$iconPath"
+                    Write-Ok "?????????$iconPath"
                 } else {
-                    Write-Warn "快捷方式图标路径不存在：$iconPath"
+                    Write-Warn "????????????$iconPath"
                 }
             }
         }
     } else {
-        Write-Warn "未找到桌面快捷方式：$($state.DesktopShortcutPath)"
+        Write-Warn "??????????$($state.DesktopShortcutPath)"
     }
 
     if ($state.LegacyShortcuts.Count -gt 0) {
-        Write-Warn '检测到旧 Start Codex With CC Switch 快捷方式；只建议删除快捷方式，不要删除 CCSwitch 数据。'
+        Write-Warn '???? Start Codex With CC Switch ??????????????????? CCSwitch ???'
         foreach ($path in $state.LegacyShortcuts) {
             Write-Host "       $path"
         }
@@ -1661,111 +1932,111 @@ function Invoke-Doctor {
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if ($codexTarget) {
         if ($codexTarget.Kind -eq 'Exe') {
-            Write-Ok "Codex 启动目标：Exe $($codexTarget.Value)"
+            Write-Ok "Codex ?????Exe $($codexTarget.Value)"
         } else {
-            Write-Warn "Codex 启动目标：AppId $($codexTarget.Value)"
-            Write-Next 'AppId 在公司电脑或管理员窗口可能被拦。若启动失败，请在 launcher-config.json 设置 codexPath。'
+            Write-Warn "Codex ?????AppId $($codexTarget.Value)"
+            Write-Next 'AppId ???????????????????????? launcher-config.json ?? codexPath?'
         }
     } else {
-        Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，再运行 bootstrap。'
+        Write-ErrorLine '???? Codex Desktop????? Codex Desktop???? bootstrap?'
     }
 
     $ccswitchPath = Resolve-CCSwitchPath -Config $Config
     if ($ccswitchPath) {
-        Write-Ok "CCSwitch 路径：$ccswitchPath"
+        Write-Ok "CCSwitch ???$ccswitchPath"
     } else {
-        Write-Warn '未检测到 CCSwitch。官方模式仍可用，第三方模式暂不可用。'
+        Write-Warn '???? CCSwitch???????????????????'
     }
 
     if (Test-ProcessRunning -Path $ccswitchPath -Names $Script:CCSwitchProcessNames) {
-        Write-Ok 'CCSwitch 正在运行。'
+        Write-Ok 'CCSwitch ?????'
     } else {
-        Write-Warn 'CCSwitch 未运行。'
+        Write-Warn 'CCSwitch ????'
     }
 
     if (Test-LocalPort -Port 15721) {
-        Write-Ok '本地路由正在监听：127.0.0.1:15721'
+        Write-Ok '?????????127.0.0.1:15721'
     } else {
-        Write-Warn '未检测到本地路由监听：127.0.0.1:15721'
+        Write-Warn '???????????127.0.0.1:15721'
     }
 
     switch (Get-CCSwitchCodexEnhancementState) {
-        'enabled' { Write-Ok 'CCSwitch Codex 应用增强：已开启。菜单 2 会使用这个状态。' }
-        'disabled' { Write-Warn 'CCSwitch Codex 应用增强：已关闭。菜单 3/官方模式会使用这个状态。' }
-        'unset' { Write-Warn 'CCSwitch Codex 应用增强：未设置。启动器会在菜单 2/3 自动写入。' }
-        'missing' { Write-Warn "未找到 CCSwitch 设置文件：$Script:CCSwitchSettingsPath" }
-        default { Write-Warn 'CCSwitch Codex 应用增强：无法安全识别。' }
+        'enabled' { Write-Ok 'CCSwitch Codex ??????????? 2 ????????' }
+        'disabled' { Write-Warn 'CCSwitch Codex ??????????? 3/????????????' }
+        'unset' { Write-Warn 'CCSwitch Codex ???????????????? 2/3 ?????' }
+        'missing' { Write-Warn "??? CCSwitch ?????$Script:CCSwitchSettingsPath" }
+        default { Write-Warn 'CCSwitch Codex ????????????' }
     }
 
     if (Test-Path -LiteralPath $Script:DefaultCodexHome -PathType Container) {
-        Write-Ok "默认 .codex 目录存在：$Script:DefaultCodexHome"
+        Write-Ok "?? .codex ?????$Script:DefaultCodexHome"
     } else {
-        Write-Warn "默认 .codex 目录不存在：$Script:DefaultCodexHome"
+        Write-Warn "?? .codex ??????$Script:DefaultCodexHome"
     }
 
     if (Test-Path -LiteralPath $Script:CodexGlobalStatePath -PathType Leaf) {
-        Write-Ok 'Codex 界面状态文件存在；启动器会在切换时保护工作模式等本地偏好。'
+        Write-Ok 'Codex ?????????????????????????????'
     } else {
-        Write-Warn "未找到 Codex 界面状态文件：$Script:CodexGlobalStatePath"
+        Write-Warn "??? Codex ???????$Script:CodexGlobalStatePath"
     }
 
     if (Test-Path -LiteralPath $Script:CodexUiStateSnapshotPath -PathType Leaf) {
-        Write-Ok "Codex 界面偏好快照存在：$Script:CodexUiStateSnapshotPath"
+        Write-Ok "Codex ?????????$Script:CodexUiStateSnapshotPath"
     } else {
-        Write-Warn '尚未生成 Codex 界面偏好快照；下次通过菜单 1/2/3 切换时会自动生成。'
+        Write-Warn '???? Codex ????????????? 1/2/3 ?????????'
     }
 
     $authState = Get-AuthState -Path $Script:ActiveAuthPath
     switch ($authState) {
-        'official-like' { Write-Ok '默认 auth.json 看起来是官方 ChatGPT/OAuth 登录态。' }
-        'api-key-like' { Write-Warn '默认 auth.json 看起来是 API-key 登录态。' }
-        'unknown' { Write-Warn '默认 auth.json 存在但无法安全识别。' }
-        default { Write-Warn '默认 auth.json 不存在。' }
+        'official-like' { Write-Ok '?? auth.json ?????? ChatGPT/OAuth ????' }
+        'api-key-like' { Write-Warn '?? auth.json ???? API-key ????' }
+        'unknown' { Write-Warn '?? auth.json ??????????' }
+        default { Write-Warn '?? auth.json ????' }
     }
 
     if (Test-ActiveConfigLooksCustom) {
-        Write-Warn '默认 .codex config 当前看起来是第三方/custom 模式。'
+        Write-Warn '?? .codex config ?????????/custom ???'
     } else {
-        Write-Ok '默认 .codex config 未发现 custom provider 路由。'
+        Write-Ok '?? .codex config ??? custom provider ???'
     }
 
     if ($state.OfficialProfileComplete) {
-        Write-Ok "官方 profile 完整：$Script:OfficialProfileDir"
+        Write-Ok "?? profile ???$Script:OfficialProfileDir"
     } elseif ($state.OfficialProfilePartial) {
-        Write-Warn "官方 profile 不完整：$Script:OfficialProfileDir"
+        Write-Warn "?? profile ????$Script:OfficialProfileDir"
     } else {
-        Write-Warn "未保存官方 profile：$Script:OfficialProfileDir"
+        Write-Warn "????? profile?$Script:OfficialProfileDir"
     }
 
     if ($state.ThirdPartyProfileComplete) {
-        Write-Ok "第三方路由配置可用：$Script:ThirdPartyProfileDir"
+        Write-Ok "??????????$Script:ThirdPartyProfileDir"
     } elseif ($state.ThirdPartyProfilePartial) {
-        Write-Warn "第三方路由配置不完整：$Script:ThirdPartyProfileDir"
+        Write-Warn "???????????$Script:ThirdPartyProfileDir"
     } else {
-        Write-Warn "未保存第三方路由配置：$Script:ThirdPartyProfileDir"
+        Write-Warn "???????????$Script:ThirdPartyProfileDir"
     }
 
     if ($state.ThirdPartyPureProfileComplete) {
-        Write-Ok '纯第三方/API-key 状态可用。'
+        Write-Ok '????/API-key ?????'
     } else {
-        Write-Warn '纯第三方/API-key 状态不完整；菜单 3 可能沿用当前登录文件。'
+        Write-Warn '????/API-key ???????? 3 ???????????'
     }
 
-    Write-Next '新电脑建议顺序：bootstrap -> official -> thirdparty-preserve-auth。'
+    Write-Next '????????bootstrap -> official -> thirdparty-preserve-auth?'
 }
 
 function Invoke-Bootstrap {
     param($Config, [switch]$NoLaunch)
 
     Write-Host ''
-    Write-Host "Codex Windows Launcher 初始化 $Script:LauncherVersion"
+    Write-Host "Codex Windows Launcher ??? $Script:LauncherVersion"
     Write-Host '-----------------------------'
 
     $state = Detect-ExistingLauncherState
-    Write-Info "检测结果：$($state.StateKind)，风险级别：$($state.RiskLevel)"
+    Write-Info "?????$($state.StateKind)??????$($state.RiskLevel)"
 
     if ($state.LegacyShortcuts.Count -gt 0) {
-        Write-Warn '检测到旧 Start Codex With CC Switch 快捷方式。bootstrap 只记录，不删除。'
+        Write-Warn '???? Start Codex With CC Switch ?????bootstrap ????????'
         Backup-ShortcutMetadata -ShortcutPaths $state.LegacyShortcuts -Reason 'legacy-shortcuts-detected' -NoWrite:$NoLaunch
     }
 
@@ -1774,8 +2045,8 @@ function Invoke-Bootstrap {
 
     Invoke-Doctor -Config (Read-LauncherConfig)
 
-    Write-Next '如果 Codex 已安装，下一步运行官方模式并完成网页登录：.\codex-launcher.ps1 -Mode official'
-    Write-Next '之后切换第三方时，启动器会自动安全保存可确认的官方登录状态。'
+    Write-Next '?? Codex ?????????????????????.\codex-launcher.ps1 -Mode official'
+    Write-Next '??????????????????????????????'
 }
 
 function Invoke-Check {
@@ -1784,51 +2055,51 @@ function Invoke-Check {
     Invoke-Doctor -Config $Config
     return
 
-    Write-Info "启动器配置：$Script:ConfigPath"
-    Write-Info "Codex Desktop 当前实际读取的配置目录：$Script:DefaultCodexHome"
-    Write-Info "已保存的第三方状态目录：$Script:ThirdPartyProfileDir"
-    Write-Info "已保存的官方状态目录：$Script:OfficialProfileDir"
+    Write-Info "??????$Script:ConfigPath"
+    Write-Info "Codex Desktop ????????????$Script:DefaultCodexHome"
+    Write-Info "????????????$Script:ThirdPartyProfileDir"
+    Write-Info "???????????$Script:OfficialProfileDir"
 
     if (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf) {
         if (Test-ActiveConfigLooksCustom) {
-            Write-Warn '默认 .codex config 当前看起来是第三方/custom 模式。'
+            Write-Warn '?? .codex config ?????????/custom ???'
         } else {
-            Write-Info '默认 .codex config 没有发现 custom provider 路由。'
+            Write-Info '?? .codex config ???? custom provider ???'
         }
     } else {
-        Write-Warn '未找到默认 .codex config.toml。'
+        Write-Warn '????? .codex config.toml?'
     }
 
     if (Test-AuthLooksApiKey -Path $Script:ActiveAuthPath) {
-        Write-Warn '默认 auth.json 当前看起来是 API-key 登录态，不是官方 ChatGPT 登录态。'
+        Write-Warn '?? auth.json ?????? API-key ???????? ChatGPT ????'
     } else {
-        Write-Info '默认 auth.json 不像 API-key 登录态，或文件不存在。'
+        Write-Info '?? auth.json ?? API-key ???????????'
     }
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if ($codexTarget) {
-        Write-Info "Codex 启动目标：$($codexTarget.Kind) $($codexTarget.Value)"
+        Write-Info "Codex ?????$($codexTarget.Kind) $($codexTarget.Value)"
     } else {
-        Write-Warn "未找到 Codex。请在 '$Script:ConfigPath' 里设置 codexPath。"
+        Write-Warn "??? Codex??? '$Script:ConfigPath' ??? codexPath?"
     }
 
     $ccswitchPath = Resolve-CCSwitchPath -Config $Config
     if ($ccswitchPath) {
-        Write-Info "CCSwitch 路径：$ccswitchPath"
+        Write-Info "CCSwitch ???$ccswitchPath"
     } else {
-        Write-Warn "未找到 CCSwitch。请在 '$Script:ConfigPath' 里设置 ccswitchPath。"
+        Write-Warn "??? CCSwitch??? '$Script:ConfigPath' ??? ccswitchPath?"
     }
 
     if (Test-Path -LiteralPath $Script:DefaultCodexHome -PathType Container) {
-        Write-Info '默认 .codex 目录存在。'
+        Write-Info '?? .codex ?????'
     } else {
-        Write-Warn '未找到默认 .codex 目录。'
+        Write-Warn '????? .codex ???'
     }
 
     if (Test-ProcessRunning -Path $ccswitchPath -Names $Script:CCSwitchProcessNames) {
-        Write-Info 'CCSwitch 正在运行。'
+        Write-Info 'CCSwitch ?????'
     } else {
-        Write-Warn 'CCSwitch 未运行。'
+        Write-Warn 'CCSwitch ????'
     }
 }
 
@@ -1837,7 +2108,7 @@ function Start-OfficialMode {
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if (-not $codexTarget) {
-        Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，然后运行 .\codex-launcher.ps1 -Mode bootstrap'
+        Write-ErrorLine '???? Codex Desktop????? Codex Desktop????? .\codex-launcher.ps1 -Mode bootstrap'
         return
     }
 
@@ -1853,9 +2124,9 @@ function Start-OfficialMode {
     Set-CCSwitchCodexEnhancement -Enabled $false -NoWrite:$NoLaunch | Out-Null
 
     if (Restore-OfficialProfile -NoWrite:$NoLaunch) {
-        Write-Info '已找到官方状态缓存；将恢复它，不强制重新登录。'
+        Write-Info '???????????????????????'
     } else {
-        Write-Warn '没有已保存的官方状态。首次官方启动可能需要网页登录。'
+        Write-Warn '??????????????????????????'
         Repair-ActiveConfigForOfficial -NoWrite:$NoLaunch
         Disable-ApiKeyAuthForOfficial -NoWrite:$NoLaunch
     }
@@ -1871,22 +2142,22 @@ function Ensure-CCSwitchRunning {
     )
 
     if (Test-ProcessRunning -Path $Path -Names $Script:CCSwitchProcessNames) {
-        Write-Info 'CCSwitch 已经在运行。'
+        Write-Info 'CCSwitch ??????'
         return $true
     }
 
     if (-not (Test-ExecutablePath -Path $Path)) {
-        Write-Warn "CCSwitch 未运行，也没有找到可执行文件。请在 '$Script:ConfigPath' 里设置 ccswitchPath。"
-        Write-Next '官方模式仍可使用；第三方模式需要先安装并登录 CCSwitch。'
+        Write-Warn "CCSwitch ????????????????? '$Script:ConfigPath' ??? ccswitchPath?"
+        Write-Next '?????????????????????? CCSwitch?'
         return $false
     }
 
     if ($NoLaunch) {
-        Write-Info "NoLaunch: 将会启动 CCSwitch：$Path"
+        Write-Info "NoLaunch: ???? CCSwitch?$Path"
         return $true
     }
 
-    Write-Info "正在启动 CCSwitch：$Path"
+    Write-Info "???? CCSwitch?$Path"
     Start-Process -FilePath $Path | Out-Null
     return $true
 }
@@ -1909,22 +2180,22 @@ function Restart-CCSwitchForThirdParty {
     }
 
     if ($NoLaunch) {
-        Write-Info 'NoLaunch: 将会等待 CCSwitch 本地路由端口 127.0.0.1:15721 就绪。'
+        Write-Info 'NoLaunch: ???? CCSwitch ?????? 127.0.0.1:15721 ???'
         return $true
     }
 
     $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-LocalPort -Port 15721) {
-            Write-Ok 'CCSwitch 本地路由已就绪：127.0.0.1:15721'
+            Write-Ok 'CCSwitch ????????127.0.0.1:15721'
             Start-Sleep -Seconds 2
             return $true
         }
         Start-Sleep -Milliseconds 500
     }
 
-    Write-ErrorLine '未检测到本地路由监听：127.0.0.1:15721，本次不会启动 Codex，避免继续走官方额度。'
-    Write-Next '请确认 CCSwitch 已开启本地路由/自定义路由后重试。'
+    Write-ErrorLine '???????????127.0.0.1:15721??????? Codex???????????'
+    Write-Next '??? CCSwitch ???????/?????????'
     return $false
 }
 
@@ -1934,20 +2205,20 @@ function Confirm-CCSwitchCodexEnhancement {
         [switch]$NoLaunch
     )
 
-    $expectedText = if ($ExpectedEnabled) { '开启' } else { '关闭' }
+    $expectedText = if ($ExpectedEnabled) { '??' } else { '??' }
     if ($NoLaunch) {
-        Write-Info "NoLaunch: 将会确认 CCSwitch Codex 应用增强已${expectedText}。"
+        Write-Info "NoLaunch: ???? CCSwitch Codex ?????${expectedText}?"
         return $true
     }
 
     $state = Get-CCSwitchCodexEnhancementState
     if (($ExpectedEnabled -and $state -eq 'enabled') -or ((-not $ExpectedEnabled) -and $state -eq 'disabled')) {
-        Write-Ok "CCSwitch Codex 应用增强已${expectedText}。"
+        Write-Ok "CCSwitch Codex ?????${expectedText}?"
         return $true
     }
 
-    Write-ErrorLine "CCSwitch Codex 应用增强未能确认${expectedText}，本次不会启动 Codex，避免继续使用错误额度。"
-    Write-Next "请打开 CCSwitch 设置页检查“Codex 应用增强 / 切换第三方时保留官方登录”，当前检测状态：$state"
+    Write-ErrorLine "CCSwitch Codex ????????${expectedText}??????? Codex????????????"
+    Write-Next "??? CCSwitch ??????Codex ???? / ?????????????????????$state"
     return $false
 }
 
@@ -1958,13 +2229,13 @@ function Stop-ProcessesBeforeThirdPartySwitch {
         [switch]$NoLaunch
     )
 
-    Write-Info '正在切换第三方模式：先关闭 Codex 和 CCSwitch，确保新配置会被重新读取。'
+    Write-Info '????????????? Codex ? CCSwitch?????????????'
     $codexClosed = Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $CodexPath -FallbackNames $Script:CodexProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
     $ccswitchClosed = Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $CCSwitchPath -FallbackNames $Script:CCSwitchProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
 
     if (-not $codexClosed -or -not $ccswitchClosed) {
-        Write-ErrorLine 'Codex 或 CCSwitch 没有完全退出，已停止本次切换，避免继续使用旧路由/旧登录状态。'
-        Write-Next '请手动关闭 Codex 和 CCSwitch 后再运行启动器。'
+        Write-ErrorLine 'Codex ? CCSwitch ????????????????????????/??????'
+        Write-Next '????? Codex ? CCSwitch ????????'
         return $false
     }
 
@@ -1979,17 +2250,17 @@ function Confirm-ThirdPartyRouteConfigReady {
     param([switch]$NoLaunch)
 
     if ($NoLaunch) {
-        Write-Info 'NoLaunch: 将会检查当前 config.toml 是否为第三方/CCSwitch 路由配置。'
+        Write-Info 'NoLaunch: ?????? config.toml ??????/CCSwitch ?????'
         return $true
     }
 
     if (Test-ActiveConfigLooksThirdPartyRoute) {
-        Write-Ok '当前 config.toml 已切换为第三方/CCSwitch 路由配置。'
+        Write-Ok '?? config.toml ???????/CCSwitch ?????'
         return $true
     }
 
-    Write-ErrorLine '当前 config.toml 不像第三方/CCSwitch 路由配置，本次不会启动 Codex。'
-    Write-Next "请先保存第三方路由配置，或检查 $Script:ThirdPartyProfileDir\config.toml。"
+    Write-ErrorLine '?? config.toml ?????/CCSwitch ??????????? Codex?'
+    Write-Next "??????????????? $Script:ThirdPartyProfileDir\config.toml?"
     return $false
 }
 
@@ -1998,7 +2269,7 @@ function Start-ThirdPartyPreserveAuthMode {
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if (-not $codexTarget) {
-        Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，然后运行 .\codex-launcher.ps1 -Mode bootstrap'
+        Write-ErrorLine '???? Codex Desktop????? Codex Desktop????? .\codex-launcher.ps1 -Mode bootstrap'
         return
     }
 
@@ -2013,11 +2284,12 @@ function Start-ThirdPartyPreserveAuthMode {
     }
 
     Save-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
+    $configPreservationBaseline = Get-ConfigPreservationBaseline
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
     if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
-        Write-ErrorLine '菜单 2 需要可确认的官方登录态，本次不会启动 Codex。'
-        Write-Next '请先选择菜单 1 完成官方登录，然后再选择菜单 2。'
+        Write-ErrorLine '?? 2 ?????????????????? Codex?'
+        Write-Next '?????? 1 ?????????????? 2?'
         return
     }
 
@@ -2034,7 +2306,7 @@ function Start-ThirdPartyPreserveAuthMode {
     }
 
     if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
-        Write-ErrorLine 'CCSwitch 重启后未能恢复官方登录态，本次不会启动 Codex。'
+        Write-ErrorLine 'CCSwitch ??????????????????? Codex?'
         return
     }
 
@@ -2046,7 +2318,13 @@ function Start-ThirdPartyPreserveAuthMode {
         return
     }
 
+    Merge-PreservedCodexConfigSections -BaselineLines $configPreservationBaseline -NoWrite:$NoLaunch | Out-Null
+    if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
+        return
+    }
+
     Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
+    Invoke-HistorySyncBeforeCodexLaunch -Config $Config -Reason '?? 2 ?????????????????????????' -NoLaunch:$NoLaunch | Out-Null
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
 }
 
@@ -2054,14 +2332,14 @@ function Start-ThirdPartyPureMode {
     param($Config, [switch]$NoLaunch)
 
     if (-not (Test-ProfileComplete -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml', 'auth.json'))) {
-        Write-ErrorLine '纯第三方/API-key 状态不完整：需要 thirdparty profile 同时包含 config.toml 和 auth.json。'
-        Write-Next '如果只想使用第三方路由并保留官方登录，请选择菜单 2。'
+        Write-ErrorLine '????/API-key ???????? thirdparty profile ???? config.toml ? auth.json?'
+        Write-Next '???????????????????????? 2?'
         return
     }
 
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if (-not $codexTarget) {
-        Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，然后运行 .\codex-launcher.ps1 -Mode bootstrap'
+        Write-ErrorLine '???? Codex Desktop????? Codex Desktop????? .\codex-launcher.ps1 -Mode bootstrap'
         return
     }
 
@@ -2102,7 +2380,7 @@ function Start-ThirdPartyPureMode {
 function Start-ThirdPartyMode {
     param($Config, [switch]$NoLaunch)
 
-    Write-Warn 'thirdparty 命令已作为兼容别名处理：等同于 thirdparty-preserve-auth。'
+    Write-Warn 'thirdparty ??????????????? thirdparty-preserve-auth?'
     Start-ThirdPartyPreserveAuthMode -Config $Config -NoLaunch:$NoLaunch
 }
 
@@ -2112,20 +2390,20 @@ function Show-Menu {
     while ($true) {
         Write-Host ''
         Write-Host '=============================='
-        Write-Host " Codex Windows 启动器 $Script:LauncherVersion"
+        Write-Host " Codex Windows ??? $Script:LauncherVersion"
         Write-Host '=============================='
-        Write-Host '1. 官方模式：恢复官方登录态并启动 Codex'
-        Write-Host '   - 首次可能需要网页登录；之后会自动安全保存并复用官方状态。'
-        Write-Host '2. 第三方模式：保留官方登录信息并使用第三方路由'
-        Write-Host '   - 日常推荐；只切换路由配置，不恢复第三方 auth.json。'
-        Write-Host '3. 第三方模式：纯第三方/API-key'
-        Write-Host '   - 备用模式；可恢复第三方 auth.json，但不会覆盖官方缓存。'
-        Write-Host '4. 诊断/体检当前状态'
-        Write-Host '   - 只读检查，不修改任何文件。'
-        Write-Host '5. 初始化/升级本机启动器'
-        Write-Host '   - 创建配置和桌面快捷方式，不删除旧数据。'
-        Write-Host '6. 退出'
-        $choice = Read-Host '请输入数字'
+        Write-Host '1. ??????????????? Codex'
+        Write-Host '   - ????????????????????????????'
+        Write-Host '2. ??????????????????????'
+        Write-Host '   - ??????????????????? auth.json?'
+        Write-Host '3. ??????????/API-key'
+        Write-Host '   - ??????????? auth.json???????????'
+        Write-Host '4. ??/??????'
+        Write-Host '   - ?????????????'
+        Write-Host '5. ???/???????'
+        Write-Host '   - ???????????????????'
+        Write-Host '6. ??'
+        $choice = Read-Host '?????'
 
         switch ($choice) {
             '1' { Start-OfficialMode -Config $Config -NoLaunch:$NoLaunch; return }
@@ -2134,7 +2412,7 @@ function Show-Menu {
             '4' { Invoke-Doctor -Config (Read-LauncherConfig); if ($NoLaunch) { return } }
             '5' { Invoke-Bootstrap -Config $Config -NoLaunch:$NoLaunch; return }
             '6' { return }
-            default { Write-Warn '请输入 1、2、3、4、5 或 6。' }
+            default { Write-Warn '??? 1?2?3?4?5 ? 6?' }
         }
     }
 }

@@ -1,9 +1,11 @@
 {
   "codexPath": "",
   "ccswitchPath": "",
+  "historySyncBackendPath": "",
   "notes": [
     "This file is an example only. Copy it to %USERPROFILE%\\.codex-launcher\\launcher-config.json before editing.",
     "codexPath and ccswitchPath are optional. Leave them empty unless auto-discovery fails.",
+    "historySyncBackendPath is optional. Leave it empty when codex-history-sync-windows-work is next to this project.",
     "Do not place API keys, OAuth tokens, passwords, cookies, provider secrets, or auth.json contents here.",
     "Third-party keys and provider routing remain managed by CCSwitch."
   ]
