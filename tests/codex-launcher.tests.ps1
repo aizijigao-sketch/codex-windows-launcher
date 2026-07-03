@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $LauncherPath = Join-Path $ProjectRoot 'codex-launcher.ps1'
@@ -46,23 +46,24 @@ Describe 'Codex Windows launcher documentation and configuration' {
     }
 
     It 'documents official and third-party modes' {
-        Assert-ContainsText $script:Readme '????'
-        Assert-ContainsText $script:Readme '?????'
+        Assert-ContainsText $script:Readme '当前版本：`v0\.4\.3`'
+        Assert-ContainsText $script:Readme '官方模式'
+        Assert-ContainsText $script:Readme '第三方模式'
         Assert-ContainsText $script:Readme 'bootstrap'
         Assert-ContainsText $script:Readme 'doctor'
         Assert-ContainsText $script:Readme '\.codex'
         Assert-ContainsText $script:Readme 'CCSwitch'
         Assert-ContainsText $script:Readme 'profiles'
-        Assert-ContainsText $script:Readme '??????'
-        Assert-ContainsText $script:Readme '????'
-        Assert-DoesNotContainText $script:Readme 'saveofficial|?????????|??????????'
+        Assert-ContainsText $script:Readme '保留官方登录'
+        Assert-ContainsText $script:Readme '纯第三方'
+        Assert-DoesNotContainText $script:Readme 'saveofficial|保存当前为官方状态|网页登录成功后点一次'
     }
 
     It 'documents first use and safety boundaries' {
-        Assert-ContainsText $script:Readme '??????'
-        Assert-ContainsText $script:Readme '????'
+        Assert-ContainsText $script:Readme '首次使用流程'
+        Assert-ContainsText $script:Readme '安全边界'
         Assert-ContainsText $script:Readme 'auth\.json'
-        Assert-ContainsText $script:Readme 'OAuth tokens into API keys|OAuth token.*API key|??'
+        Assert-ContainsText $script:Readme 'OAuth tokens into API keys|OAuth token.*API key|转换'
     }
 
     It 'documents company shortcut cleanup while preserving CCSwitch data' {
@@ -70,7 +71,7 @@ Describe 'Codex Windows launcher documentation and configuration' {
         Assert-ContainsText $script:Readme 'Desktop'
         Assert-ContainsText $script:Readme 'Start Menu'
         Assert-ContainsText $script:Readme '\.cc-switch'
-        Assert-ContainsText $script:Readme 'do not delete|????|???'
+        Assert-ContainsText $script:Readme 'do not delete|不要删除|不允许'
     }
 
     It 'keeps the example config free of obvious secrets' {
@@ -86,6 +87,18 @@ Describe 'Codex Windows launcher documentation and configuration' {
         Assert-ContainsText $script:ExampleConfigRaw '"historySyncBackendPath"'
         Assert-DoesNotContainText $script:ExampleConfigRaw '"officialCleanConfig"'
         Assert-DoesNotContainText $script:ExampleConfigRaw 'gpt-5\.1'
+    }
+
+    It 'keeps README UTF-8 Chinese text intact' {
+        $cjkCount = ([regex]::Matches($script:Readme, '[\u4e00-\u9fff]')).Count
+        if ($cjkCount -lt 100) {
+            throw "README appears mojibake or lossy: only $cjkCount CJK characters found."
+        }
+
+        $questionRuns = ([regex]::Matches($script:Readme, '\?{4,}')).Count
+        if ($questionRuns -gt 0) {
+            throw "README contains suspicious replacement-question-mark runs."
+        }
     }
 }
 
@@ -163,9 +176,9 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-DoesNotContainText $script:Launcher "'saveofficial'"
         Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
         Assert-ContainsText $script:Launcher 'Invoke-Doctor'
-        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.2'''
-        Assert-ContainsText $script:Launcher 'Codex Windows ??? \$Script:LauncherVersion'
-        Assert-ContainsText $script:Launcher 'Codex Windows Launcher ?? \$Script:LauncherVersion'
+        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.3'''
+        Assert-ContainsText $script:Launcher 'Codex Windows 启动器 \$Script:LauncherVersion'
+        Assert-ContainsText $script:Launcher 'Codex Windows Launcher 诊断 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
         Assert-ContainsText $script:Launcher 'Read-LauncherConfig'
         Assert-ContainsText $script:Launcher 'Write-LauncherConfigIfMissing'
@@ -207,8 +220,8 @@ Describe 'codex-launcher.ps1 static safety checks' {
         }
 
         Assert-ContainsText $script:Launcher 'Test-IsElevated'
-        Assert-ContainsText $script:Launcher '??????????????? Windows AppId ?? Codex'
-        Assert-ContainsText $script:Launcher '?? Codex Desktop ? codexPath'
+        Assert-ContainsText $script:Launcher '当前是管理员窗口，无法可靠通过 Windows AppId 启动 Codex'
+        Assert-ContainsText $script:Launcher '真实 Codex Desktop 的 codexPath'
     }
 
     It 'splits third-party modes by auth preservation behavior' {
@@ -236,13 +249,13 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'marketplaces\.'
         Assert-ContainsText $script:Launcher 'plugins\.'
         Assert-ContainsText $script:Launcher 'mcp_servers'
-        Assert-ContainsText $script:Launcher '?? auth.json ?????? ChatGPT/OAuth ???'
+        Assert-ContainsText $script:Launcher '最终 auth.json 已确认是官方 ChatGPT/OAuth 登录态'
         Assert-ContainsText $script:Launcher 'Test-ActiveConfigLooksThirdPartyRoute'
         Assert-ContainsText $script:Launcher 'Get-RunningExecutablePathByNames'
-        Assert-ContainsText $script:Launcher '???????????'
-        Assert-ContainsText $script:Launcher '?????????????????/?????'
-        Assert-ContainsText $script:Launcher '?????? Codex'
-        Assert-ContainsText $script:Launcher '????/API-key ?????'
+        Assert-ContainsText $script:Launcher '确保新配置会被重新读取'
+        Assert-ContainsText $script:Launcher '已停止本次切换，避免继续使用旧路由/旧登录状态'
+        Assert-ContainsText $script:Launcher '本次不会启动 Codex'
+        Assert-ContainsText $script:Launcher '纯第三方/API-key 状态不完整'
         Assert-ContainsText $script:Launcher "Files = @\('config\.toml', 'auth\.json'\)"
         Assert-ContainsText $script:Launcher 'Restore-ProfileFiles -ProfileName ''thirdparty'' -ProfileDir \$Script:ThirdPartyProfileDir -Files @\(''config\.toml''\)'
         Assert-ContainsText $script:Launcher 'Ensure-OfficialAuthForPreserveMode'
@@ -303,7 +316,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'composer-auto-context-enabled'
         Assert-ContainsText $script:Launcher 'sidebar-width'
         Assert-ContainsText $script:Launcher 'skip-full-access-confirm'
-        Assert-ContainsText $script:Launcher 'Codex ??????'
+        Assert-ContainsText $script:Launcher 'Codex 界面偏好快照'
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*prompt-history"
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*auth"
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*token"
@@ -350,13 +363,13 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'TimeoutSeconds = 8'
         Assert-ContainsText $script:Launcher 'Test-ProcessRunning -Path \$PreferredPath -Names \$FallbackNames'
         Assert-ContainsText $script:Launcher 'CloseMainWindow'
-        Assert-ContainsText $script:Launcher '????????'
-        Assert-ContainsText $script:Launcher '??????'
+        Assert-ContainsText $script:Launcher '等待本地状态写盘'
+        Assert-ContainsText $script:Launcher '准备强制关闭'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 250'
-        Assert-ContainsText $script:Launcher 'Codex ? CCSwitch ??????'
+        Assert-ContainsText $script:Launcher 'Codex 或 CCSwitch 没有完全退出'
         Assert-ContainsText $script:Launcher 'ReadyTimeoutSeconds = 20'
-        Assert-ContainsText $script:Launcher 'CCSwitch ???????'
-        Assert-ContainsText $script:Launcher '???????????127\.0\.0\.1:15721??????? Codex'
+        Assert-ContainsText $script:Launcher 'CCSwitch 本地路由已就绪'
+        Assert-ContainsText $script:Launcher '未检测到本地路由监听：127\.0\.0\.1:15721，本次不会启动 Codex'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 500'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Seconds 2'
         Assert-ContainsText $script:Launcher '\$runningPath = Get-RunningExecutablePathByNames -Names \$Script:CCSwitchProcessNames'
@@ -373,7 +386,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher "'official-like'"
         Assert-ContainsText $script:Launcher "'unknown'"
         Assert-ContainsText $script:Launcher "authState -eq 'unknown'"
-        Assert-ContainsText $script:Launcher '??????'
+        Assert-ContainsText $script:Launcher '不会自动移走'
     }
 
     It 'backs up official config before repair writes' {
