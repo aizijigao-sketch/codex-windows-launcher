@@ -46,7 +46,7 @@ Describe 'Codex Windows launcher documentation and configuration' {
     }
 
     It 'documents official and third-party modes' {
-        Assert-ContainsText $script:Readme '当前版本：`v0\.4\.3`'
+        Assert-ContainsText $script:Readme '当前版本：`v0\.4\.13`'
         Assert-ContainsText $script:Readme '官方模式'
         Assert-ContainsText $script:Readme '第三方模式'
         Assert-ContainsText $script:Readme 'bootstrap'
@@ -176,13 +176,24 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-DoesNotContainText $script:Launcher "'saveofficial'"
         Assert-ContainsText $script:Launcher 'Invoke-Bootstrap'
         Assert-ContainsText $script:Launcher 'Invoke-Doctor'
-        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.3'''
+        Assert-ContainsText $script:Launcher '\$Script:LauncherVersion = ''v0\.4\.13'''
         Assert-ContainsText $script:Launcher 'Codex Windows 启动器 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher 'Codex Windows Launcher 诊断 \$Script:LauncherVersion'
         Assert-ContainsText $script:Launcher "Mode -in @\('check', 'doctor'\)"
         Assert-ContainsText $script:Launcher 'Read-LauncherConfig'
         Assert-ContainsText $script:Launcher 'Write-LauncherConfigIfMissing'
         Assert-ContainsText $script:Launcher 'New-LauncherShortcut'
+        Assert-ContainsText $script:Launcher 'RunLogPath'
+        Assert-ContainsText $script:Launcher 'Write-LauncherLog'
+        Assert-ContainsText $script:Launcher 'Protect-LogMessage'
+        Assert-ContainsText $script:Launcher '本次日志文件'
+        Assert-ContainsText $script:Launcher '定向历史恢复退出码'
+        Assert-ContainsText $script:Launcher '历史状态摘要 before'
+        Assert-ContainsText $script:Launcher '历史状态摘要 after'
+        Assert-ContainsText $script:Launcher '菜单 1 阶段：检查并按需恢复聊天记录'
+        Assert-ContainsText $script:Launcher '--expected-provider'
+        Assert-ContainsText $script:Launcher '\$historyProviderArgs'
+        Assert-DoesNotContainText $script:Launcher 'Add-Content[^\n]+auth\.json'
     }
 
     It 'prefers a real Codex executable before AppId fallback' {
@@ -317,6 +328,13 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'sidebar-width'
         Assert-ContainsText $script:Launcher 'skip-full-access-confirm'
         Assert-ContainsText $script:Launcher 'Codex 界面偏好快照'
+        Assert-ContainsText $script:Launcher 'ContainsKey\(\$Key\)'
+        Assert-ContainsText $script:Launcher 'ConvertTo-PlainJsonValue'
+        Assert-DoesNotContainText $script:Launcher '\$Map\.Contains\(\$Key\)'
+        Assert-DoesNotContainText $script:Launcher '\$serializer\.Serialize\(\$Value\)'
+        Assert-ContainsText $script:Launcher 'Set-OfficialConfigProviderOpenAI'
+        Assert-ContainsText $script:Launcher 'model_provider = "openai"'
+        Assert-ContainsText $script:Launcher "ExpectedProvider 'openai'"
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*prompt-history"
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*auth"
         Assert-DoesNotContainText $script:Launcher "CodexUiStateAtomKeys = @\([^)]*token"
@@ -324,12 +342,15 @@ Describe 'codex-launcher.ps1 static safety checks' {
         $officialStart = $script:Launcher.IndexOf('function Start-OfficialMode')
         $ensureStart = $script:Launcher.IndexOf('function Ensure-CCSwitchRunning')
         $officialBody = $script:Launcher.Substring($officialStart, $ensureStart - $officialStart)
+        $officialStopCheckIndex = $officialBody.IndexOf('官方模式未能完全关闭 Codex 或 CCSwitch')
         $officialSaveIndex = $officialBody.IndexOf('Save-CodexUiStateSnapshot')
         $officialRestoreProfileIndex = $officialBody.IndexOf('Restore-OfficialProfile')
+        $officialProviderIndex = $officialBody.IndexOf('Set-OfficialConfigProviderOpenAI')
         $officialRestoreUiIndex = $officialBody.IndexOf('Restore-CodexUiStateSnapshot')
+        $officialHistorySyncIndex = $officialBody.IndexOf('Invoke-HistorySyncBeforeCodexLaunch')
         $officialLaunchIndex = $officialBody.IndexOf('Start-LaunchTarget')
-        if ($officialSaveIndex -lt 0 -or $officialRestoreProfileIndex -lt 0 -or $officialRestoreUiIndex -lt 0 -or $officialLaunchIndex -lt 0 -or $officialSaveIndex -gt $officialRestoreProfileIndex -or $officialRestoreProfileIndex -gt $officialRestoreUiIndex -or $officialRestoreUiIndex -gt $officialLaunchIndex) {
-            throw 'Official mode must save UI preferences, restore profile, restore UI preferences, then launch Codex.'
+        if ($officialStopCheckIndex -lt 0 -or $officialSaveIndex -lt 0 -or $officialRestoreProfileIndex -lt 0 -or $officialProviderIndex -lt 0 -or $officialRestoreUiIndex -lt 0 -or $officialHistorySyncIndex -lt 0 -or $officialLaunchIndex -lt 0 -or $officialStopCheckIndex -gt $officialSaveIndex -or $officialSaveIndex -gt $officialRestoreProfileIndex -or $officialRestoreProfileIndex -gt $officialProviderIndex -or $officialProviderIndex -gt $officialRestoreUiIndex -or $officialRestoreUiIndex -gt $officialHistorySyncIndex -or $officialHistorySyncIndex -gt $officialLaunchIndex) {
+            throw 'Official mode must stop old processes, save UI preferences, restore profile, force openai provider, restore UI preferences, sync history visibility, then launch Codex.'
         }
 
         $preserveStart = $script:Launcher.IndexOf('function Start-ThirdPartyPreserveAuthMode')
@@ -354,7 +375,7 @@ Describe 'codex-launcher.ps1 static safety checks' {
         }
     }
 
-    It 'waits for Codex and CCSwitch to exit before third-party switching' {
+    It 'force-closes Codex and CCSwitch during mode switches' {
         if (-not (Test-Path -LiteralPath $LauncherPath)) {
             Write-Host 'Skipping third-party process cleanup check because codex-launcher.ps1 is not present.'
             return
@@ -362,8 +383,15 @@ Describe 'codex-launcher.ps1 static safety checks' {
 
         Assert-ContainsText $script:Launcher 'TimeoutSeconds = 8'
         Assert-ContainsText $script:Launcher 'Test-ProcessRunning -Path \$PreferredPath -Names \$FallbackNames'
+        Assert-ContainsText $script:Launcher 'return \(@\(Get-ProcessesByPath -Path \$Path\)\.Count -gt 0\)'
         Assert-ContainsText $script:Launcher 'CloseMainWindow'
         Assert-ContainsText $script:Launcher '等待本地状态写盘'
+        Assert-ContainsText $script:Launcher '最多等待 \$TimeoutSeconds 秒'
+        Assert-ContainsText $script:Launcher '没有主窗口，直接强制关闭'
+        Assert-ContainsText $script:Launcher 'ForceImmediately'
+        Assert-ContainsText $script:Launcher '立即强制关闭 \$DisplayName'
+        Assert-ContainsText $script:Launcher 'Stop-LauncherProcess -DisplayName ''Codex'' -PreferredPath \$codexProcessPath -FallbackNames \$Script:CodexProcessNames -ForceImmediately'
+        Assert-ContainsText $script:Launcher 'Stop-LauncherProcess -DisplayName ''Codex'' -PreferredPath \$CodexPath -FallbackNames \$Script:CodexProcessNames -TimeoutSeconds 10 -ForceImmediately'
         Assert-ContainsText $script:Launcher '准备强制关闭'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 250'
         Assert-ContainsText $script:Launcher 'Codex 或 CCSwitch 没有完全退出'
@@ -373,6 +401,52 @@ Describe 'codex-launcher.ps1 static safety checks' {
         Assert-ContainsText $script:Launcher 'Start-Sleep -Milliseconds 500'
         Assert-ContainsText $script:Launcher 'Start-Sleep -Seconds 2'
         Assert-ContainsText $script:Launcher '\$runningPath = Get-RunningExecutablePathByNames -Names \$Script:CCSwitchProcessNames'
+    }
+
+    It 'keeps preserve-auth custom route tied to official OAuth and verified history sync' {
+        if (-not (Test-Path -LiteralPath $LauncherPath)) {
+            Write-Host 'Skipping preserve-auth route auth check because codex-launcher.ps1 is not present.'
+            return
+        }
+
+        Assert-ContainsText $script:Launcher 'Set-PreserveAuthCustomProviderRequiresOfficialAuth'
+        Assert-ContainsText $script:Launcher 'Ensure-ThirdPartyCustomProviderConfig'
+        Assert-ContainsText $script:Launcher 'Get-ActiveConfigProviderSummary'
+        Assert-ContainsText $script:Launcher 'HasCustomProviderSection'
+        Assert-ContainsText $script:Launcher 'HasLocalRouteBaseUrl'
+        Assert-ContainsText $script:Launcher 'requires_openai_auth = true'
+        Assert-ContainsText $script:Launcher 'model_provider = "custom"'
+        Assert-ContainsText $script:Launcher '\[model_providers\.custom\]'
+        Assert-ContainsText $script:Launcher 'History Sync Tool 能识别 custom provider'
+        Assert-ContainsText $script:Launcher '--json\$providerArgText status'
+        Assert-ContainsText $script:Launcher '--codex-home \$Script:DefaultCodexHome'
+        Assert-ContainsText $script:Launcher '--json\$providerArgText sync'
+        Assert-ContainsText $script:Launcher '执行历史状态检查\(\$attempt/3\)'
+        Assert-ContainsText $script:Launcher '等待 1 秒后复查 provider'
+        Assert-ContainsText $script:Launcher '定向恢复当前 \.codex'
+        Assert-ContainsText $script:Launcher '定向恢复后仍有聊天异常'
+        Assert-DoesNotContainText $script:Launcher '--one-click-safe-sync'
+        Assert-ContainsText $script:Launcher '未找到 Codex History Sync Tool；本次不涉及聊天记录恢复'
+        Assert-ContainsText $script:Launcher '历史同步目标 provider='
+        Assert-ContainsText $script:Launcher '历史同步目标 provider 不符合预期'
+        Assert-ContainsText $script:Launcher '本次不会执行历史恢复，也不会启动 Codex，避免把聊天记录修到错误通道'
+        Assert-ContainsText $script:Launcher '启动器已阻止继续进入错误聊天通道'
+        Assert-ContainsText $script:Launcher "ExpectedProvider 'custom'"
+        Assert-ContainsText $script:Launcher '历史状态已干净'
+        Assert-ContainsText $script:Launcher '正在调用 Codex History Sync Tool 定向恢复'
+        Assert-ContainsText $script:Launcher 'Codex History Sync Tool 定向恢复完成'
+
+        $preserveStart = $script:Launcher.IndexOf('function Start-ThirdPartyPreserveAuthMode')
+        $pureStart = $script:Launcher.IndexOf('function Start-ThirdPartyPureMode')
+        $preserveBody = $script:Launcher.Substring($preserveStart, $pureStart - $preserveStart)
+        $repairIndex = $preserveBody.IndexOf('Ensure-ThirdPartyCustomProviderConfig')
+        $mergeIndex = $preserveBody.IndexOf('Merge-PreservedCodexConfigSections')
+        $requiresAuthIndex = $preserveBody.IndexOf('Set-PreserveAuthCustomProviderRequiresOfficialAuth')
+        $historySyncCheckIndex = $preserveBody.IndexOf('Invoke-HistorySyncBeforeCodexLaunch')
+        $launchIndex = $preserveBody.IndexOf('Start-LaunchTarget')
+        if ($repairIndex -lt 0 -or $mergeIndex -lt 0 -or $requiresAuthIndex -lt 0 -or $historySyncCheckIndex -lt 0 -or $launchIndex -lt 0 -or $repairIndex -gt $mergeIndex -or $mergeIndex -gt $requiresAuthIndex -or $requiresAuthIndex -gt $historySyncCheckIndex -or $historySyncCheckIndex -gt $launchIndex) {
+            throw 'Preserve-auth mode must repair custom provider, merge config, require official OAuth for custom route, try history sync, then launch Codex.'
+        }
     }
 
     It 'treats unknown auth state conservatively' {

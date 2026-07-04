@@ -8,7 +8,7 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$Script:LauncherVersion = 'v0.4.3'
+$Script:LauncherVersion = 'v0.4.13'
 
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -21,6 +21,8 @@ $Script:UserProfile = [Environment]::GetFolderPath('UserProfile')
 $Script:LauncherHome = Join-Path $Script:UserProfile '.codex-launcher'
 $Script:ConfigPath = Join-Path $Script:LauncherHome 'launcher-config.json'
 $Script:BackupDir = Join-Path $Script:LauncherHome 'backup'
+$Script:LogDir = Join-Path $Script:LauncherHome 'logs'
+$Script:RunLogPath = Join-Path $Script:LogDir ("launcher.{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $Script:DefaultCodexHome = Join-Path $Script:UserProfile '.codex'
 $Script:ActiveConfigPath = Join-Path $Script:DefaultCodexHome 'config.toml'
 $Script:ActiveAuthPath = Join-Path $Script:DefaultCodexHome 'auth.json'
@@ -89,28 +91,67 @@ $Script:ConfigPreserveTopLevelKeys = @(
     'disable_response_storage'
 )
 
+function Protect-LogMessage {
+    param([string]$Message)
+
+    if ($null -eq $Message) {
+        return ''
+    }
+
+    $safe = $Message
+    $safe = $safe -replace '(?i)(sk-[a-z0-9_-]{8,})', '<redacted-api-key>'
+    $safe = $safe -replace '(?i)(api[_-]?key\s*[:=]\s*)[^,\s;"]+', '$1<redacted>'
+    $safe = $safe -replace '(?i)(token\s*[:=]\s*)[^,\s;"]+', '$1<redacted>'
+    $safe = $safe -replace '(?i)(password\s*[:=]\s*)[^,\s;"]+', '$1<redacted>'
+    $safe = $safe -replace '(?i)(authorization\s*[:=]\s*bearer\s+)[^,\s;"]+', '$1<redacted>'
+    return $safe
+}
+
+function Write-LauncherLog {
+    param(
+        [string]$Level,
+        [string]$Message
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Script:LogDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $Script:LogDir -Force -ErrorAction Stop | Out-Null
+        }
+        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+        $safe = Protect-LogMessage -Message $Message
+        Add-Content -LiteralPath $Script:RunLogPath -Value "[$timestamp][$Level] $safe" -Encoding UTF8
+    } catch {
+        # Logging must never break launching.
+    }
+}
+
 function Write-Info {
     param([string]$Message)
+    Write-LauncherLog -Level 'info' -Message $Message
     Write-Host "[info] $Message"
 }
 
 function Write-Warn {
     param([string]$Message)
+    Write-LauncherLog -Level 'warn' -Message $Message
     Write-Host "[warn] $Message" -ForegroundColor Yellow
 }
 
 function Write-Ok {
     param([string]$Message)
+    Write-LauncherLog -Level 'ok' -Message $Message
     Write-Host "[ok] $Message" -ForegroundColor Green
 }
 
 function Write-ErrorLine {
     param([string]$Message)
+    Write-LauncherLog -Level 'error' -Message $Message
     Write-Host "[error] $Message" -ForegroundColor Red
 }
 
 function Write-Next {
     param([string]$Message)
+    Write-LauncherLog -Level 'next' -Message $Message
     Write-Host "[next] $Message" -ForegroundColor Cyan
 }
 
@@ -676,9 +717,7 @@ function Test-ProcessRunning {
     )
 
     if (Test-ExecutablePath -Path $Path) {
-        if (@(Get-ProcessesByPath -Path $Path).Count -gt 0) {
-            return $true
-        }
+        return (@(Get-ProcessesByPath -Path $Path).Count -gt 0)
     }
 
     return ((Get-ProcessesByNames -Names $Names | Measure-Object).Count -gt 0)
@@ -690,6 +729,7 @@ function Stop-LauncherProcess {
         [string]$PreferredPath,
         [string[]]$FallbackNames,
         [int]$TimeoutSeconds = 8,
+        [switch]$ForceImmediately,
         [switch]$NoLaunch
     )
 
@@ -711,8 +751,29 @@ function Stop-LauncherProcess {
     if ($NoLaunch) {
         if ($matches.Count -gt 0) {
             Write-Info "NoLaunch: would close $($matches.Count) $DisplayName process(es)."
+            if ($ForceImmediately) {
+                Write-Info "NoLaunch: 将会立即强制关闭 $DisplayName。"
+            }
         }
         return $true
+    }
+
+    if ($ForceImmediately) {
+        if ($matches.Count -gt 0) {
+            Write-Info "立即强制关闭 $DisplayName，不等待主窗口退出。"
+        }
+        foreach ($proc in $matches) {
+            try {
+                $liveProcess = Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue
+                if ($liveProcess) {
+                    Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+                }
+            } catch {
+                Write-Warn "Could not force close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
+            }
+        }
+        Start-Sleep -Milliseconds 250
+        return (-not (Test-ProcessRunning -Path $PreferredPath -Names $FallbackNames))
     }
 
     foreach ($proc in $matches) {
@@ -722,10 +783,11 @@ function Stop-LauncherProcess {
                 continue
             }
             if ($liveProcess.MainWindowHandle -ne 0) {
-                Write-Info "正在温和关闭 $DisplayName 进程 $($proc.ProcessId)，等待本地状态写盘。"
+                Write-Info "正在温和关闭 $DisplayName 进程 $($proc.ProcessId)，等待本地状态写盘，最多等待 $TimeoutSeconds 秒。"
                 [void]$liveProcess.CloseMainWindow()
             } else {
-                Write-Info "$DisplayName 进程 $($proc.ProcessId) 没有主窗口，将在等待后再兜底关闭。"
+                Write-Info "$DisplayName 进程 $($proc.ProcessId) 没有主窗口，直接强制关闭。"
+                Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
             }
         } catch {
             Write-Warn "Could not close $DisplayName process $($proc.ProcessId): $($_.Exception.Message)"
@@ -887,13 +949,16 @@ function Start-LaunchTarget {
     $snapshot = Set-EnvForChildLaunch -SetValues $SetEnv -RemoveNames $RemoveEnv
     try {
         if ($Target.Kind -eq 'AppId') {
+            Write-Info "正在启动 Codex：AppId $($Target.Value)"
             Start-AppIdTarget -AppId $Target.Value
         } else {
+            Write-Info "正在启动 Codex：Exe $($Target.Value)"
             Start-Process -FilePath $Target.Value | Out-Null
         }
     } finally {
         Restore-ProcessEnv -Snapshot $snapshot
     }
+    Write-Next "如聊天记录仍异常，请发送本次日志文件：$Script:RunLogPath"
 }
 
 function Resolve-HistorySyncBackendPath {
@@ -902,6 +967,7 @@ function Resolve-HistorySyncBackendPath {
     if ($Config -and -not [string]::IsNullOrWhiteSpace($Config.historySyncBackendPath)) {
         $configured = [Environment]::ExpandEnvironmentVariables($Config.historySyncBackendPath)
         if (Test-Path -LiteralPath $configured -PathType Leaf) {
+            Write-Info "Codex History Sync Tool 来源：launcher-config.json，路径=$configured"
             return (Resolve-Path -LiteralPath $configured).ProviderPath
         }
         Write-Warn "配置中的 historySyncBackendPath 不存在：$configured"
@@ -911,51 +977,309 @@ function Resolve-HistorySyncBackendPath {
     $projectsDir = Split-Path -Parent $launcherDir
     $sibling = Join-Path $projectsDir 'codex-history-sync-windows-work\sync_backend.py'
     if (Test-Path -LiteralPath $sibling -PathType Leaf) {
+        Write-Info "Codex History Sync Tool 来源：相邻项目自动发现，路径=$sibling"
         return (Resolve-Path -LiteralPath $sibling).ProviderPath
     }
 
+    Write-Warn '未自动发现相邻的 Codex History Sync Tool 后端。'
     return $null
+}
+
+function Get-ObjectValue {
+    param(
+        $Object,
+        [string]$Key,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) {
+        return $Default
+    }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.ContainsKey($Key)) {
+            return $Object[$Key]
+        }
+        return $Default
+    }
+
+    $property = $Object.PSObject.Properties[$Key]
+    if ($property) {
+        return $property.Value
+    }
+
+    return $Default
+}
+
+function Get-ConfigSectionTextFromContent {
+    param(
+        [string]$Text,
+        [string]$SectionName
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return ''
+    }
+
+    $capture = $false
+    $result = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($Text -split "`r?`n")) {
+        $section = Get-ConfigSectionName -Line $line
+        if ($null -ne $section) {
+            if ($capture -and $section -ne $SectionName) {
+                break
+            }
+            $capture = ($section -eq $SectionName)
+        }
+
+        if ($capture) {
+            $result.Add($line)
+        }
+    }
+
+    return ($result.ToArray() -join "`n")
+}
+
+function Get-ActiveConfigProviderSummary {
+    param([string]$Path = $Script:ActiveConfigPath)
+
+    $exists = Test-Path -LiteralPath $Path -PathType Leaf
+    $text = ''
+    if ($exists) {
+        $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    }
+
+    $modelProvider = ''
+    if ($text -match '(?m)^\s*model_provider\s*=\s*["'']([^"'']+)["'']') {
+        $modelProvider = $Matches[1]
+    }
+
+    $model = ''
+    if ($text -match '(?m)^\s*model\s*=\s*["'']([^"'']+)["'']') {
+        $model = $Matches[1]
+    }
+
+    $customProviderText = Get-ConfigSectionTextFromContent -Text $text -SectionName 'model_providers.custom'
+
+    return New-Object PSObject -Property @{
+        Exists = $exists
+        ModelProvider = $modelProvider
+        Model = $model
+        HasCustomProviderSection = (-not [string]::IsNullOrWhiteSpace($customProviderText))
+        HasLocalRouteBaseUrl = ($customProviderText -match '(?m)^\s*base_url\s*=.*(127\.0\.0\.1:15721|localhost:15721)')
+        RequiresOpenAIAuth = ($customProviderText -match '(?m)^\s*requires_openai_auth\s*=\s*true\s*(#.*)?$')
+    }
+}
+
+function Format-ActiveConfigProviderSummary {
+    param($Summary)
+
+    if (-not $Summary) {
+        return 'config=<missing-summary>'
+    }
+
+    return ("exists={0}; model_provider={1}; model={2}; custom_section={3}; local_route={4}; requires_openai_auth={5}" -f `
+        $Summary.Exists,
+        $Summary.ModelProvider,
+        $Summary.Model,
+        $Summary.HasCustomProviderSection,
+        $Summary.HasLocalRouteBaseUrl,
+        $Summary.RequiresOpenAIAuth)
+}
+
+function Write-ActiveConfigProviderSummary {
+    param([string]$Stage)
+
+    Write-Info ("config 摘要 {0}：{1}" -f $Stage, (Format-ActiveConfigProviderSummary -Summary (Get-ActiveConfigProviderSummary)))
+}
+
+function Get-HistorySyncStatusObject {
+    param($Payload)
+
+    $status = Get-ObjectValue -Object $Payload -Key 'status'
+    if ($status) {
+        return $status
+    }
+    return $Payload
+}
+
+function Get-HistorySyncRemainingWork {
+    param(
+        $Payload,
+        [int]$SkippedBusy = 0
+    )
+
+    $status = Get-HistorySyncStatusObject -Payload $Payload
+    $remaining = 0
+    foreach ($field in @('movable_threads', 'movable_database_threads', 'movable_session_meta_entries', 'missing_session_index_entries', 'archived_index_mismatch_threads')) {
+        $value = Get-ObjectValue -Object $status -Key $field
+        if ($null -ne $value) {
+            $remaining += [int]$value
+        }
+    }
+
+    return @{
+        Remaining = $remaining
+        SkippedBusy = $SkippedBusy
+        Status = $status
+    }
+}
+
+function Format-HistoryStatusSummary {
+    param($Payload)
+
+    $status = Get-HistorySyncStatusObject -Payload $Payload
+    if (-not $status) {
+        return 'status=<missing>'
+    }
+
+    $loginMode = Get-ObjectValue -Object (Get-ObjectValue -Object $status -Key 'login_mode') -Key 'mode'
+    return ("provider={0}; source={1}; login={2}; total={3}; movable={4}; db={5}; visibility={6}; session_meta={7}; missing_index={8}; archived_mismatch={9}; indexed={10}; sessions={11}; provider_error={12}" -f `
+        (Get-ObjectValue -Object $status -Key 'current_provider'),
+        (Get-ObjectValue -Object $status -Key 'current_provider_source'),
+        $loginMode,
+        (Get-ObjectValue -Object $status -Key 'total_threads'),
+        (Get-ObjectValue -Object $status -Key 'movable_threads'),
+        (Get-ObjectValue -Object $status -Key 'movable_database_threads'),
+        (Get-ObjectValue -Object $status -Key 'visibility_movable_threads'),
+        (Get-ObjectValue -Object $status -Key 'movable_session_meta_entries'),
+        (Get-ObjectValue -Object $status -Key 'missing_session_index_entries'),
+        (Get-ObjectValue -Object $status -Key 'archived_index_mismatch_threads'),
+        (Get-ObjectValue -Object $status -Key 'indexed_threads'),
+        (Get-ObjectValue -Object $status -Key 'session_file_count'),
+        (Get-ObjectValue -Object $status -Key 'provider_resolution_error'))
 }
 
 function Invoke-HistorySyncBeforeCodexLaunch {
     param(
         $Config,
         [string]$Reason,
+        [string]$ExpectedProvider = '',
         [switch]$NoLaunch
     )
 
     $backendPath = Resolve-HistorySyncBackendPath -Config $Config
     if (-not $backendPath) {
-        Write-Warn '未找到 Codex History Sync Tool 后端；本次只启动 Codex，不自动修复聊天列表。'
-        Write-Next '如需联动，请在 launcher-config.json 设置 historySyncBackendPath，或把两个项目放在同一个 20_Projects 目录下。'
-        return $false
+        Write-Warn '未找到 Codex History Sync Tool；本次不涉及聊天记录恢复，只启动 Codex。'
+        Write-Next '如需自动判断和一键恢复聊天记录，请在 launcher-config.json 设置 historySyncBackendPath，或把两个项目放在同一个 20_Projects 目录下。'
+        return $true
     }
+
+    $historyProviderArgs = @()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedProvider)) {
+        $historyProviderArgs = @('--expected-provider', $ExpectedProvider)
+    }
+    $providerArgText = if ($historyProviderArgs.Count -gt 0) { " $($historyProviderArgs -join ' ')" } else { '' }
 
     if ($NoLaunch) {
-        Write-Info "NoLaunch: 将会在启动 Codex 前运行历史修复：py -3 $backendPath --json sync"
+        Write-Info "NoLaunch: 将会在启动 Codex 前检查历史状态：py -3 $backendPath --codex-home $Script:DefaultCodexHome --json$providerArgText status"
+        Write-Info "NoLaunch: 历史异常且 provider 匹配时将调用定向恢复：py -3 $backendPath --codex-home $Script:DefaultCodexHome --json$providerArgText sync"
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedProvider)) {
+            Write-Info "NoLaunch: 历史同步期望 provider=$ExpectedProvider。"
+        }
         return $true
     }
 
-    Write-Info "启动 Codex 前运行历史修复：$Reason"
+    Write-Info "启动 Codex 前检查历史状态：$Reason"
+    Write-ActiveConfigProviderSummary -Stage 'history-sync 前'
     try {
-        $completed = & py -3 $backendPath --json sync 2>&1
+        $statusPayload = $null
+        $providerMismatch = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Info "执行历史状态检查($attempt/3)：py -3 $backendPath --codex-home $Script:DefaultCodexHome --json$providerArgText status"
+            $statusCompleted = & py -3 $backendPath --codex-home $Script:DefaultCodexHome --json @historyProviderArgs status 2>&1
+            Write-Info "历史状态检查($attempt/3)退出码：$LASTEXITCODE"
+            $statusRaw = ($statusCompleted | Out-String).Trim()
+            if ([string]::IsNullOrWhiteSpace($statusRaw)) {
+                Write-Warn '历史状态检查没有返回输出；继续启动 Codex。'
+                return $true
+            }
+
+            $statusPayload = $statusRaw | ConvertFrom-Json
+            if ((Get-ObjectValue -Object $statusPayload -Key 'ok') -ne $true) {
+                Write-Warn "历史状态检查未完成：$(Get-ObjectValue -Object $statusPayload -Key 'error')；继续启动 Codex。"
+                return $true
+            }
+
+            $currentProviderForAttempt = Get-ObjectValue -Object $statusPayload -Key 'current_provider'
+            if ([string]::IsNullOrWhiteSpace($ExpectedProvider) -or $currentProviderForAttempt -eq $ExpectedProvider) {
+                $providerMismatch = $false
+                break
+            }
+
+            $providerMismatch = $true
+            Write-Warn "历史同步目标 provider 暂不符合预期($attempt/3)：实际=$currentProviderForAttempt，期望=$ExpectedProvider。"
+            Write-Info "历史状态摘要 mismatch($attempt/3)：$(Format-HistoryStatusSummary -Payload $statusPayload)"
+            if ($attempt -lt 3) {
+                Write-Info '等待 1 秒后复查 provider，避免 Codex/CCSwitch 刚退出后的短暂状态不一致。'
+                Start-Sleep -Seconds 1
+            }
+        }
+
+        $precheck = Get-HistorySyncRemainingWork -Payload $statusPayload
+        $currentProvider = Get-ObjectValue -Object $statusPayload -Key 'current_provider'
+        $totalThreads = Get-ObjectValue -Object $statusPayload -Key 'total_threads'
+        Write-Info "历史同步目标 provider=$currentProvider，总线程=$totalThreads，待修复=$($precheck.Remaining)。"
+        Write-Info "历史状态摘要 before：$(Format-HistoryStatusSummary -Payload $statusPayload)"
+        if ($providerMismatch -or (-not [string]::IsNullOrWhiteSpace($ExpectedProvider) -and $currentProvider -ne $ExpectedProvider)) {
+            Write-Warn "历史同步目标 provider 不符合预期：实际=$currentProvider，期望=$ExpectedProvider。"
+            Write-ActiveConfigProviderSummary -Stage 'history-sync provider 不匹配时'
+            Write-ErrorLine '历史同步目标 provider 不符合预期，本次不会执行历史恢复，也不会启动 Codex，避免把聊天记录修到错误通道。'
+            Write-Next '请发送本次日志；重点查看 config 摘要与 history status 的 provider/source 是否一致。'
+            return $false
+        }
+
+        if ($precheck.Remaining -le 0 -and -not $providerMismatch) {
+            Write-Ok "历史状态已干净：总线程=$totalThreads，待修复=0；跳过修复。"
+            return $true
+        }
+
+        Write-Warn "检测到聊天记录异常：待修复=$($precheck.Remaining)，provider异常=$providerMismatch。"
+        Write-Info '正在调用 Codex History Sync Tool 定向恢复当前 .codex；可能需要几十秒，完成前请不要手动启动 Codex。'
+        Write-Info "执行定向历史恢复：py -3 $backendPath --codex-home $Script:DefaultCodexHome --json$providerArgText sync"
+        $completed = & py -3 $backendPath --codex-home $Script:DefaultCodexHome --json @historyProviderArgs sync 2>&1
+        Write-Info "定向历史恢复退出码：$LASTEXITCODE"
         $raw = ($completed | Out-String).Trim()
         if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Warn '历史修复工具没有返回输出；继续启动 Codex。'
-            return $false
+            Write-Warn 'Codex History Sync Tool 没有返回输出；继续启动 Codex。'
+            return $true
         }
         $payload = $raw | ConvertFrom-Json
-        if ($payload.ok -ne $true) {
-            Write-Warn "历史修复未完成：$($payload.error)"
-            Write-Next '如果启动后仍看不到聊天，打开 Codex History Sync Tool 点“一键同步/修复”。'
+        if ((Get-ObjectValue -Object $payload -Key 'ok') -ne $true) {
+            Write-ErrorLine "Codex History Sync Tool 定向恢复未完成；本次不会启动 Codex：$(Get-ObjectValue -Object $payload -Key 'error')"
+            Write-Next '请发送本次日志；启动器已避免进入未恢复聊天状态。'
             return $false
         }
-        $status = $payload.status
-        Write-Ok "历史修复完成：轮次=$($payload.sync_rounds)，剩余待修复=$($status.movable_threads)，备份=$($payload.backup_path)"
-        return $true
+
+        Write-Info "执行恢复后历史状态检查：py -3 $backendPath --codex-home $Script:DefaultCodexHome --json$providerArgText status"
+        $postCompleted = & py -3 $backendPath --codex-home $Script:DefaultCodexHome --json @historyProviderArgs status 2>&1
+        Write-Info "恢复后历史状态检查退出码：$LASTEXITCODE"
+        $postRaw = ($postCompleted | Out-String).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($postRaw)) {
+            $postPayload = $postRaw | ConvertFrom-Json
+            $postWork = Get-HistorySyncRemainingWork -Payload $postPayload
+            $postProvider = Get-ObjectValue -Object $postPayload -Key 'current_provider'
+            $postTotal = Get-ObjectValue -Object $postPayload -Key 'total_threads'
+            Write-Info "定向恢复后历史状态：provider=$postProvider，总线程=$postTotal，剩余=$($postWork.Remaining)。"
+            Write-Info "历史状态摘要 after：$(Format-HistoryStatusSummary -Payload $postPayload)"
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedProvider) -and $postProvider -ne $ExpectedProvider) {
+                Write-ErrorLine "定向恢复后 provider 仍不符合预期：实际=$postProvider，期望=$ExpectedProvider。本次不会启动 Codex。"
+                Write-Next '请发送本次日志；启动器已阻止继续进入错误聊天通道。'
+                return $false
+            }
+            if ($postWork.Remaining -le 0) {
+                Write-Ok 'Codex History Sync Tool 定向恢复完成，聊天状态已干净。'
+                return $true
+            }
+            Write-ErrorLine "定向恢复后仍有聊天异常：剩余=$($postWork.Remaining)。本次不会启动 Codex。"
+            Write-Next '请发送本次日志；如需临时使用，可手动打开 Codex History Sync Tool 恢复后再启动。'
+            return $false
+        }
+        Write-ErrorLine '定向恢复后没有拿到可验证的历史状态，本次不会启动 Codex。'
+        return $false
     } catch {
         Write-Warn "历史修复调用失败：$($_.Exception.Message)"
-        Write-Next '本次不会复制凭据或聊天；将继续启动 Codex。若侧栏为空，请手动运行 Codex History Sync Tool。'
+        Write-Next '本次不会复制凭据或聊天；也不会启动 Codex，避免进入未恢复聊天状态。'
         return $false
     }
 }
@@ -963,8 +1287,61 @@ function Invoke-HistorySyncBeforeCodexLaunch {
 function New-MinimalOfficialConfig {
     @(
         '# Official Codex profile managed by codex-launcher.',
-        '# Keep this profile free of custom provider and base_url settings.'
+        '# Keep this profile free of custom provider and base_url settings.',
+        'model_provider = "openai"'
     ) -join [Environment]::NewLine
+}
+
+function Set-OfficialConfigProviderOpenAI {
+    param([switch]$NoWrite)
+
+    Ensure-Directory -Path $Script:DefaultCodexHome
+    if (-not (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf)) {
+        if ($NoWrite) {
+            Write-Info "NoLaunch: 将会创建官方配置并写入 model_provider = `"openai`"。"
+            return $true
+        }
+        Set-Content -LiteralPath $Script:ActiveConfigPath -Value (New-MinimalOfficialConfig) -Encoding UTF8
+        Write-Ok '已创建官方配置并写入 model_provider = "openai"。'
+        return $true
+    }
+
+    $lines = @(Get-Content -LiteralPath $Script:ActiveConfigPath -Encoding UTF8)
+    $result = New-Object System.Collections.Generic.List[string]
+    $sawProvider = $false
+    $changed = $false
+
+    foreach ($line in $lines) {
+        if ($line -match '^\s*model_provider\s*=') {
+            $result.Add('model_provider = "openai"')
+            $sawProvider = $true
+            if ($line -notmatch '^\s*model_provider\s*=\s*["'']openai["'']\s*(#.*)?$') {
+                $changed = $true
+            }
+            continue
+        }
+        $result.Add($line)
+    }
+
+    if (-not $sawProvider) {
+        $result.Insert(0, 'model_provider = "openai"')
+        $changed = $true
+    }
+
+    if (-not $changed) {
+        Write-Ok '官方配置已明确使用 model_provider = "openai"。'
+        return $true
+    }
+
+    if ($NoWrite) {
+        Write-Info 'NoLaunch: 将会把官方配置标记为 model_provider = "openai"。'
+        return $true
+    }
+
+    Backup-LauncherFile -Path $Script:ActiveConfigPath -Reason 'before-official-provider-openai' | Out-Null
+    Set-Content -LiteralPath $Script:ActiveConfigPath -Value $result.ToArray() -Encoding UTF8
+    Write-Ok '已把官方配置标记为 model_provider = "openai"。'
+    return $true
 }
 
 function Backup-LauncherFile {
@@ -1030,14 +1407,62 @@ function Read-JsonMapFile {
     return $serializer.DeserializeObject($raw)
 }
 
+function ConvertTo-PlainJsonValue {
+    param(
+        $Value,
+        [int]$Depth = 0
+    )
+
+    if ($Depth -gt 80) {
+        return $null
+    }
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string] -or $Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+        return $Value
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $map = [ordered]@{}
+        foreach ($key in @($Value.Keys)) {
+            if ($null -ne $key) {
+                $map[[string]$key] = ConvertTo-PlainJsonValue -Value $Value[$key] -Depth ($Depth + 1)
+            }
+        }
+        return $map
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $items = @()
+        foreach ($item in $Value) {
+            $items += ,(ConvertTo-PlainJsonValue -Value $item -Depth ($Depth + 1))
+        }
+        return $items
+    }
+
+    $props = $Value.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' -or $_.MemberType -eq 'Property' }
+    if ($props) {
+        $map = [ordered]@{}
+        foreach ($prop in $props) {
+            $map[$prop.Name] = ConvertTo-PlainJsonValue -Value $prop.Value -Depth ($Depth + 1)
+        }
+        return $map
+    }
+
+    return [string]$Value
+}
+
 function Write-JsonMapFile {
     param(
         [string]$Path,
         $Value
     )
 
-    $serializer = New-JsonSerializer
-    $json = $serializer.Serialize($Value)
+    $plain = ConvertTo-PlainJsonValue -Value $Value
+    $json = $plain | ConvertTo-Json -Depth 100 -Compress
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
 }
@@ -1053,7 +1478,10 @@ function Test-MapHasKey {
     }
 
     if ($Map -is [System.Collections.IDictionary]) {
-        return $Map.Contains($Key)
+        if ($Map.PSObject.Methods.Name -contains 'ContainsKey') {
+            return $Map.ContainsKey($Key)
+        }
+        return (@($Map.Keys) -contains $Key)
     }
 
     return ($Map.PSObject.Properties.Name -contains $Key)
@@ -1555,6 +1983,205 @@ function Merge-PreservedCodexConfigSections {
     return $true
 }
 
+function Set-PreserveAuthCustomProviderRequiresOfficialAuth {
+    param([switch]$NoWrite)
+
+    if (-not (Test-ActiveConfigLooksThirdPartyRoute)) {
+        Write-Warn '当前 config.toml 不像 CCSwitch 本地路由；跳过官方 OAuth 路由标记修正。'
+        return $false
+    }
+
+    $lines = Read-ConfigLines -Path $Script:ActiveConfigPath
+    if ($lines.Count -eq 0) {
+        Write-Warn '当前 config.toml 为空；无法修正 custom provider 官方登录标记。'
+        return $false
+    }
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $section = ''
+    $inCustomProvider = $false
+    $sawCustomProvider = $false
+    $sawRequiresAuth = $false
+    $changed = $false
+
+    foreach ($line in $lines) {
+        $newSection = Get-ConfigSectionName -Line $line
+        if ($null -ne $newSection) {
+            if ($inCustomProvider -and -not $sawRequiresAuth) {
+                $result.Add('requires_openai_auth = true')
+                $changed = $true
+            }
+            $section = $newSection
+            $inCustomProvider = ($section -eq 'model_providers.custom')
+            if ($inCustomProvider) {
+                $sawCustomProvider = $true
+                $sawRequiresAuth = $false
+            }
+        }
+
+        if ($inCustomProvider -and $line -match '^\s*requires_openai_auth\s*=') {
+            $result.Add('requires_openai_auth = true')
+            $sawRequiresAuth = $true
+            if ($line -notmatch '^\s*requires_openai_auth\s*=\s*true\s*(#.*)?$') {
+                $changed = $true
+            }
+            continue
+        }
+
+        $result.Add($line)
+    }
+
+    if ($inCustomProvider -and -not $sawRequiresAuth) {
+        $result.Add('requires_openai_auth = true')
+        $changed = $true
+    }
+
+    if (-not $sawCustomProvider) {
+        Write-Warn '当前 config.toml 没有 [model_providers.custom]；无法标记第三方路由需要官方 OAuth。'
+        return $false
+    }
+
+    if (-not $changed) {
+        Write-Ok '第三方路由已标记为需要官方 OAuth 登录态。'
+        return $true
+    }
+
+    if ($NoWrite) {
+        Write-Info 'NoLaunch: 将会把第三方 custom provider 标记为 requires_openai_auth = true。'
+        return $true
+    }
+
+    Backup-LauncherFile -Path $Script:ActiveConfigPath -Reason 'before-preserve-auth-requires-openai-auth' | Out-Null
+    Set-Content -LiteralPath $Script:ActiveConfigPath -Value $result.ToArray() -Encoding UTF8
+    Write-Ok '已把第三方 custom provider 标记为需要官方 OAuth 登录态。'
+    return $true
+}
+
+function Ensure-ThirdPartyCustomProviderConfig {
+    param([switch]$NoWrite)
+
+    Ensure-Directory -Path $Script:DefaultCodexHome
+    $lines = Read-ConfigLines -Path $Script:ActiveConfigPath
+    if ($lines.Count -eq 0) {
+        $lines = @('model = "gpt-5.5"', '')
+    }
+
+    $summary = Get-ActiveConfigProviderSummary
+    $needsModelProvider = ($summary.ModelProvider -ne 'custom')
+    $needsCustomProvider = (-not $summary.HasCustomProviderSection)
+    $needsRoute = (-not $summary.HasLocalRouteBaseUrl)
+    $needsRequiresAuth = (-not $summary.RequiresOpenAIAuth)
+
+    if (-not ($needsModelProvider -or $needsCustomProvider -or $needsRoute -or $needsRequiresAuth)) {
+        Write-Ok '第三方 custom provider 配置已完整，可被历史同步工具识别。'
+        return $true
+    }
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $modelProviderWritten = $false
+    $insertedProvider = $false
+
+    foreach ($line in $lines) {
+        if (-not $insertedProvider -and $line -match '^\s*\[.*\]\s*$') {
+            if (-not $modelProviderWritten) {
+                $result.Add('model_provider = "custom"')
+                $modelProviderWritten = $true
+            }
+            $insertedProvider = $true
+        }
+
+        if ($line -match '^\s*model_provider\s*=') {
+            if (-not $modelProviderWritten) {
+                $result.Add('model_provider = "custom"')
+                $modelProviderWritten = $true
+            }
+            continue
+        }
+
+        $result.Add($line)
+    }
+
+    if (-not $modelProviderWritten) {
+        $result.Insert(0, 'model_provider = "custom"')
+    }
+
+    $mergedText = ($result.ToArray() -join "`n")
+    if ($mergedText -notmatch '(?m)^\s*\[model_providers\.custom\]\s*$') {
+        if ($result.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($result[$result.Count - 1])) {
+            $result.Add('')
+        }
+        $result.Add('[model_providers.custom]')
+        $result.Add('name = "CCSwitch Local Route"')
+        $result.Add('base_url = "http://127.0.0.1:15721/v1"')
+        $result.Add('requires_openai_auth = true')
+    } else {
+        $result = New-Object System.Collections.Generic.List[string]
+        $section = ''
+        $inCustomProvider = $false
+        $sawBaseUrl = $false
+        $sawRequiresAuth = $false
+        $modelProviderWritten = $false
+        foreach ($line in $lines) {
+            $newSection = Get-ConfigSectionName -Line $line
+            if ($null -ne $newSection) {
+                if ($inCustomProvider) {
+                    if (-not $sawBaseUrl) {
+                        $result.Add('base_url = "http://127.0.0.1:15721/v1"')
+                    }
+                    if (-not $sawRequiresAuth) {
+                        $result.Add('requires_openai_auth = true')
+                    }
+                }
+                $section = $newSection
+                $inCustomProvider = ($section -eq 'model_providers.custom')
+                $sawBaseUrl = $false
+                $sawRequiresAuth = $false
+            }
+
+            if ($line -match '^\s*model_provider\s*=') {
+                if (-not $modelProviderWritten) {
+                    $result.Add('model_provider = "custom"')
+                    $modelProviderWritten = $true
+                }
+                continue
+            }
+            if ($inCustomProvider -and $line -match '^\s*base_url\s*=') {
+                $result.Add('base_url = "http://127.0.0.1:15721/v1"')
+                $sawBaseUrl = $true
+                continue
+            }
+            if ($inCustomProvider -and $line -match '^\s*requires_openai_auth\s*=') {
+                $result.Add('requires_openai_auth = true')
+                $sawRequiresAuth = $true
+                continue
+            }
+            $result.Add($line)
+        }
+        if ($inCustomProvider) {
+            if (-not $sawBaseUrl) {
+                $result.Add('base_url = "http://127.0.0.1:15721/v1"')
+            }
+            if (-not $sawRequiresAuth) {
+                $result.Add('requires_openai_auth = true')
+            }
+        }
+        if (-not $modelProviderWritten) {
+            $result.Insert(0, 'model_provider = "custom"')
+        }
+    }
+
+    if ($NoWrite) {
+        Write-Info 'NoLaunch: 将会修复第三方 config.toml，使 History Sync Tool 能识别 custom provider。'
+        return $true
+    }
+
+    Backup-LauncherFile -Path $Script:ActiveConfigPath -Reason 'before-thirdparty-custom-provider-repair' | Out-Null
+    Set-Content -LiteralPath $Script:ActiveConfigPath -Value $result.ToArray() -Encoding UTF8
+    Write-Ok '已修复第三方 custom provider 配置，History Sync Tool 应能识别 provider=custom。'
+    Save-ProfileFiles -ProfileName 'thirdparty' -ProfileDir $Script:ThirdPartyProfileDir -Files @('config.toml') | Out-Null
+    return $true
+}
+
 function Restore-ThirdPartyPureProfile {
     param([switch]$NoWrite)
 
@@ -1612,12 +2239,21 @@ function Test-ActiveConfigLooksCustom {
     return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern 'model_provider\s*=\s*"custom"|\[model_providers\.custom\]|127\.0\.0\.1:15721|base_url\s*=' -Quiet)
 }
 
-function Test-ActiveConfigLooksThirdPartyRoute {
+function Test-ActiveConfigHasThirdPartyLocalRoute {
     if (-not (Test-Path -LiteralPath $Script:ActiveConfigPath -PathType Leaf)) {
         return $false
     }
 
     return (Select-String -LiteralPath $Script:ActiveConfigPath -Pattern '127\.0\.0\.1:15721|localhost:15721' -Quiet)
+}
+
+function Test-ActiveConfigLooksThirdPartyRoute {
+    $summary = Get-ActiveConfigProviderSummary
+
+    return ($summary.Exists `
+        -and $summary.ModelProvider -eq 'custom' `
+        -and $summary.HasCustomProviderSection `
+        -and $summary.HasLocalRouteBaseUrl)
 }
 
 function Test-CurrentLooksOfficialProfile {
@@ -2106,6 +2742,7 @@ function Invoke-Check {
 function Start-OfficialMode {
     param($Config, [switch]$NoLaunch)
 
+    Write-Info '菜单 1 阶段：开始官方模式切换。'
     $codexTarget = Resolve-CodexLaunchTarget -Config $Config
     if (-not $codexTarget) {
         Write-ErrorLine '未检测到 Codex Desktop。请先安装 Codex Desktop，然后运行 .\codex-launcher.ps1 -Mode bootstrap'
@@ -2118,11 +2755,20 @@ function Start-OfficialMode {
         $codexProcessPath = $codexTarget.Value
     }
 
-    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
-    Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -NoLaunch:$NoLaunch | Out-Null
+    $ccswitchClosed = Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $ccswitchPath -FallbackNames $Script:CCSwitchProcessNames -ForceImmediately -NoLaunch:$NoLaunch
+    $codexClosed = Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $codexProcessPath -FallbackNames $Script:CodexProcessNames -ForceImmediately -NoLaunch:$NoLaunch
+    Write-Info "菜单 1 阶段：进程关闭结果 CCSwitch=$ccswitchClosed Codex=$codexClosed。"
+    if (-not $ccswitchClosed -or -not $codexClosed) {
+        Write-ErrorLine '官方模式未能完全关闭 Codex 或 CCSwitch，本次不会继续切换，避免历史同步和登录态恢复被旧进程覆盖。'
+        Write-Next '请手动关闭 Codex 和 CCSwitch 后再选择菜单 1。'
+        return
+    }
+
+    Write-Info '菜单 1 阶段：保存 UI 快照并关闭 CCSwitch Codex 增强。'
     Save-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
     Set-CCSwitchCodexEnhancement -Enabled $false -NoWrite:$NoLaunch | Out-Null
 
+    Write-Info '菜单 1 阶段：恢复 official profile。'
     if (Restore-OfficialProfile -NoWrite:$NoLaunch) {
         Write-Info '已找到官方状态缓存；将恢复它，不强制重新登录。'
     } else {
@@ -2131,7 +2777,16 @@ function Start-OfficialMode {
         Disable-ApiKeyAuthForOfficial -NoWrite:$NoLaunch
     }
 
+    Write-Info '菜单 1 阶段：强制 official provider=openai。'
+    Set-OfficialConfigProviderOpenAI -NoWrite:$NoLaunch | Out-Null
+    Write-Info '菜单 1 阶段：恢复 UI 快照。'
     Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
+    Write-Info '菜单 1 阶段：检查并按需恢复聊天记录。'
+    if (-not (Invoke-HistorySyncBeforeCodexLaunch -Config $Config -Reason '菜单 1 已恢复官方登录态，启动前同步聊天可见性。' -ExpectedProvider 'openai' -NoLaunch:$NoLaunch)) {
+        return
+    }
+
+    Write-Info '菜单 1 阶段：启动 Codex。'
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv $Script:ThirdPartyEnvVars -NoLaunch:$NoLaunch
 }
 
@@ -2169,7 +2824,7 @@ function Restart-CCSwitchForThirdParty {
         [switch]$NoLaunch
     )
 
-    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $Path -FallbackNames $Script:CCSwitchProcessNames -NoLaunch:$NoLaunch | Out-Null
+    Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $Path -FallbackNames $Script:CCSwitchProcessNames -ForceImmediately -NoLaunch:$NoLaunch | Out-Null
 
     if (-not $NoLaunch) {
         Start-Sleep -Milliseconds 800
@@ -2230,8 +2885,8 @@ function Stop-ProcessesBeforeThirdPartySwitch {
     )
 
     Write-Info '正在切换第三方模式：先关闭 Codex 和 CCSwitch，确保新配置会被重新读取。'
-    $codexClosed = Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $CodexPath -FallbackNames $Script:CodexProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
-    $ccswitchClosed = Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $CCSwitchPath -FallbackNames $Script:CCSwitchProcessNames -TimeoutSeconds 10 -NoLaunch:$NoLaunch
+    $codexClosed = Stop-LauncherProcess -DisplayName 'Codex' -PreferredPath $CodexPath -FallbackNames $Script:CodexProcessNames -TimeoutSeconds 10 -ForceImmediately -NoLaunch:$NoLaunch
+    $ccswitchClosed = Stop-LauncherProcess -DisplayName 'CCSwitch' -PreferredPath $CCSwitchPath -FallbackNames $Script:CCSwitchProcessNames -TimeoutSeconds 10 -ForceImmediately -NoLaunch:$NoLaunch
 
     if (-not $codexClosed -or -not $ccswitchClosed) {
         Write-ErrorLine 'Codex 或 CCSwitch 没有完全退出，已停止本次切换，避免继续使用旧路由/旧登录状态。'
@@ -2287,6 +2942,12 @@ function Start-ThirdPartyPreserveAuthMode {
     $configPreservationBaseline = Get-ConfigPreservationBaseline
     Save-OfficialProfileIfCurrentLooksOfficial -NoWrite:$NoLaunch | Out-Null
     Restore-ThirdPartyConfig -NoWrite:$NoLaunch | Out-Null
+    Write-ActiveConfigProviderSummary -Stage '菜单2 restore-thirdparty-config 后'
+    if (-not (Ensure-ThirdPartyCustomProviderConfig -NoWrite:$NoLaunch)) {
+        Write-ErrorLine '无法修复第三方 custom provider 配置，本次不会启动 Codex。'
+        return
+    }
+    Write-ActiveConfigProviderSummary -Stage '菜单2 custom-provider-repair 后'
     if (-not (Ensure-OfficialAuthForPreserveMode -NoWrite:$NoLaunch)) {
         Write-ErrorLine '菜单 2 需要可确认的官方登录态，本次不会启动 Codex。'
         Write-Next '请先选择菜单 1 完成官方登录，然后再选择菜单 2。'
@@ -2319,12 +2980,21 @@ function Start-ThirdPartyPreserveAuthMode {
     }
 
     Merge-PreservedCodexConfigSections -BaselineLines $configPreservationBaseline -NoWrite:$NoLaunch | Out-Null
+    Write-ActiveConfigProviderSummary -Stage '菜单2 preserve-config-merge 后'
+    if (-not (Set-PreserveAuthCustomProviderRequiresOfficialAuth -NoWrite:$NoLaunch)) {
+        return
+    }
+    Write-ActiveConfigProviderSummary -Stage '菜单2 requires-openai-auth 后'
+
     if (-not (Confirm-ThirdPartyRouteConfigReady -NoLaunch:$NoLaunch)) {
         return
     }
 
     Restore-CodexUiStateSnapshot -NoWrite:$NoLaunch | Out-Null
-    Invoke-HistorySyncBeforeCodexLaunch -Config $Config -Reason '菜单 2 已确认官方登录和第三方路由，启动前同步聊天可见性。' -NoLaunch:$NoLaunch | Out-Null
+    if (-not (Invoke-HistorySyncBeforeCodexLaunch -Config $Config -Reason '菜单 2 已确认官方登录和第三方路由，启动前同步聊天可见性。' -ExpectedProvider 'custom' -NoLaunch:$NoLaunch)) {
+        return
+    }
+
     Start-LaunchTarget -Target $codexTarget -SetEnv @{} -RemoveEnv @('CODEX_HOME') -NoLaunch:$NoLaunch
 }
 
@@ -2416,6 +3086,9 @@ function Show-Menu {
         }
     }
 }
+
+Write-Info "启动器版本：$Script:LauncherVersion；Mode=$Mode；NoLaunch=$NoLaunch"
+Write-Info "本次日志文件：$Script:RunLogPath"
 
 if ($Mode -in @('check', 'doctor')) {
     Invoke-Doctor -Config (Read-LauncherConfig)

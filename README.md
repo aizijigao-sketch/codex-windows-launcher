@@ -1,6 +1,6 @@
 ﻿# Codex Windows 启动器
 
-当前版本：`v0.4.3`
+当前版本：`v0.4.13`
 
 一个 Windows PowerShell 启动器，用来在 Codex Desktop 的官方登录态和第三方路由状态之间切换：
 
@@ -8,7 +8,7 @@
 - 第三方模式，保留官方登录：使用 CCSwitch / custom 路由，但不恢复第三方 `auth.json`。
 - 第三方模式，纯第三方/API-key：恢复第三方配置和第三方 `auth.json`。
 
-这个项目主要负责启动和切换 Codex Desktop。菜单 `2` 会在启动 Codex 前尝试调用相邻的 Codex History Sync Tool 后端做一次本地历史可见性修复；它不会复制聊天正文、跨账号同步云端记录、迁移 `auth.json`、token、API key 或 CC Switch 数据库。项目列表深度修复、备份恢复和知识库同步仍应在对应工具中完成。
+这个项目主要负责启动和切换 Codex Desktop。菜单 `1` 和菜单 `2` 会在启动 Codex 前检查本地聊天状态；如果聊天状态干净，就完全跳过聊天恢复；如果发现异常且能找到 Codex History Sync Tool，就对当前默认 `%USERPROFILE%\.codex` 执行定向历史同步；如果找不到该工具，就明确提示“不涉及聊天记录恢复”并继续启动 Codex。它不会复制聊天正文、跨账号同步云端记录、迁移 `auth.json`、token、API key 或 CC Switch 数据库。
 
 ## 方案说明
 
@@ -24,6 +24,26 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 从 `v0.4.2` 开始，启动器会额外保护 Codex Desktop 的本地界面偏好，例如工作模式、窗口位置、侧边栏状态、已看过的提示等。它不会保存 `prompt-history`、线程正文、cookie、token 或 `auth.json` 内容。个性化如果由 Codex 官方账号云端保存，启动器只能避免本地状态被覆盖，不能强行改写云端账号设置。
 
 `v0.4.3` 明确修复菜单 `2` 的配置保留边界：保留官方登录态的同时，也保留官方/当前配置里的插件、marketplace、MCP 和桌面设置，避免旧 thirdparty profile 把官方能力覆盖掉。
+
+`v0.4.4` 优化启动前历史处理：菜单 `1` 和菜单 `2` 会先快速检查历史状态；如果聊天记录已经可见且没有待修复项，会直接跳过修复，不再每次等待完整同步。
+
+`v0.4.5` 优化等待体验：关闭 Codex 时会提示最长等待时间，无主窗口子进程直接强制关闭；历史修复会显示正在运行的提示，失败或仍有剩余项时继续启动 Codex。
+
+`v0.4.6` 修复官方模式历史可见性：菜单 `1` 恢复官方 profile 后会明确写入 `model_provider = "openai"`，再运行历史检查/修复；CCSwitch 关闭改为立即强制关闭，不再做主窗口等待。
+
+`v0.4.7` 增强历史同步诊断：菜单 `1` 期望 provider 为 `openai`，菜单 `2` 期望 provider 为 `custom`；启动前会打印实际同步目标、总线程和待修复数，并显式把 History Sync Tool 绑定到默认 `%USERPROFILE%\.codex`。
+
+`v0.4.8` 收敛聊天恢复职责：启动器只判断聊天状态是否异常；异常时调用 Codex History Sync Tool 的 `--one-click-safe-sync` 一键安全恢复；状态干净或工具不存在时不自行修复聊天。同时修复 Codex 界面偏好快照 JSON 序列化失败。
+
+`v0.4.9` 修复 provider 不一致时只报警不恢复的问题：菜单 `1` / `2` 发现实际 provider 与期望 provider 不一致时，也会视为聊天/通道异常并调用 Codex History Sync Tool 一键安全恢复；一键恢复模式改为 `--mode auto`。
+
+`v0.4.10` 增加落盘日志：每次运行会写入 `%USERPROFILE%\.codex-launcher\logs\launcher.yyyyMMdd-HHmmss.log`，记录菜单阶段、History Sync Tool 来源、status 摘要、一键恢复命令与退出码，便于定位聊天恢复失败；日志会做基础脱敏，不记录 `auth.json` 内容或 token。
+
+`v0.4.11` 修复 History Sync Tool `status` 返回解析错误：`status` 命令返回顶层状态对象时不再误读 `.status` 子属性，避免菜单 `1` 在真正调用一键恢复前就失败。
+
+`v0.4.12` 修复菜单 `2` 从官方模式切回第三方模式时的聊天恢复目标错误：启动器会把 thirdparty profile 的 `config.toml` 修正为 `model_provider = "custom"`、`[model_providers.custom]`、本地 CCSwitch route 和 `requires_openai_auth = true` 齐全后再调用 History Sync Tool；如果 History Sync Tool 仍识别到错误 provider，启动器会停止恢复和启动，避免把聊天记录修到错误通道。日志会额外输出脱敏 config 摘要。
+
+`v0.4.13` 将启动前聊天恢复从 `--one-click-safe-sync --mode auto` 改为针对默认 `.codex` 的 `--json sync` 定向恢复：启动器会先最多 3 次复查 History Sync Tool 看到的 provider 是否稳定匹配菜单期望，再执行同步；恢复后如果 provider 仍不匹配或仍有待修复项，会停止启动，避免进入“看似已恢复但侧栏仍缺聊天”的状态。
 
 启动 Codex Desktop 时，启动器会优先寻找真实桌面程序，而不是直接依赖 Windows AppId：
 
@@ -77,10 +97,12 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 4. 如果已经保存过官方 profile，恢复它并启动 Codex。
 5. 如果没有官方 profile，清理默认 `.codex` 中的 custom provider 配置，并暂时移走 API-key 风格的 `auth.json`。
 6. 恢复 Codex 界面偏好。
-7. 启动 Codex Desktop，让用户正常网页登录。
-8. 官方登录态会在后续安全切换时自动保存；不会把第三方/API-key 状态误保存为官方状态。
+7. 启动前尝试运行本地历史可见性修复，让官方模式也能看到当前通道应显示的本地聊天。
+8. 启动 Codex Desktop，让用户正常网页登录。
+9. 官方登录态会在后续安全切换时自动保存；不会把第三方/API-key 状态误保存为官方状态。
 
 保存过官方状态后，再选菜单 `1` 应该复用本地官方登录态，不应每次都跳网页登录。
+如果旧 Codex 或 CCSwitch 没有完全关闭，菜单 `1` 会停止切换，避免旧进程把刚恢复的登录态、界面偏好或历史索引覆盖回去。
 
 ### 2. 第三方模式：保留官方登录信息并使用第三方路由
 
@@ -97,9 +119,10 @@ Windows 版 Codex Desktop 通过 Windows AppId 启动时，通常会读取默认
 7. 重启或启动 CCSwitch，检查 `127.0.0.1:15721`，并确认增强已开启。
 8. 再次恢复并确认官方 `auth.json`，防止 CCSwitch 重启接管后把最终状态改回 API-key。
 9. 在第三方路由配置中合并保留官方/切换前的插件、marketplace、MCP、桌面设置，避免插件列表和官方能力被旧 thirdparty profile 覆盖。
-10. 恢复 Codex 界面偏好。
-11. 如果能找到 `codex-history-sync-windows-work\sync_backend.py`，启动前先同步本地聊天可见性到当前通道。
-12. 启动 Codex Desktop。
+10. 将 `[model_providers.custom]` 标记为 `requires_openai_auth = true`，让 custom/CCSwitch 路由仍明确依赖官方 OAuth 登录态。
+11. 恢复 Codex 界面偏好。
+12. 如果能找到 `codex-history-sync-windows-work\sync_backend.py`，启动前先同步本地聊天可见性到当前通道。
+13. 启动 Codex Desktop。
 
 菜单 `2` 不会恢复第三方 `auth.json`，因此不会用第三方登录文件覆盖官方登录文件。它也不会把旧 thirdparty profile 里的插件列表当成最终状态；官方/当前配置中的插件、marketplace、MCP 和桌面设置会被保留下来。
 
