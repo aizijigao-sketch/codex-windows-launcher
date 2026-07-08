@@ -1,0 +1,28 @@
+# Local launcher state
+.codex-launcher/
+profiles/
+backup/
+
+# Optional local-only shortcut/icon assets
+assets/*.ico
+assets/*.lnk
+*.lnk
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.disabled-for-official
+
+# Secrets and machine-specific config
+launcher-config.json
+auth.json
+.env
+.env.*
+
+# PowerShell and editor noise
+*.ps1xml
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
